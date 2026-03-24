@@ -50,7 +50,7 @@ FORM_CATALOG = {
     "BD_Customer": {"name": "客户", "alias": ["客户", "客户档案"], "fields": "FCustId,FNumber,FName,FShortName,FContact,FPhone"},
     "BD_Supplier": {"name": "供应商", "alias": ["供应商", "供应商档案", "厂家"], "fields": "FSupplierId,FNumber,FName,FShortName,FContact,FPhone"},
     "BD_Department": {"name": "部门", "alias": ["部门", "组织"], "fields": "FDeptId,FNumber,FName,FFullName"},
-    "BD_Empinfo": {"name": "员工", "alias": ["员工", "人员", "职员", "用户"], "fields": "FID,FStaffNumber,FName,FDeptId.FName,FPost"},
+    "BD_Empinfo": {"name": "员工", "alias": ["员工", "人员", "职员", "用户"], "fields": "FID,FStaffNumber"},
     "BD_Stock": {"name": "仓库", "alias": ["仓库", "库房", "仓位"], "fields": "FStockId,FNumber,FName,FGroup.FName"},
     "BD_Unit": {"name": "计量单位", "alias": ["单位", "计量单位"], "fields": "FUnitId,FNumber,FName"},
     "BD_Currency": {"name": "币别", "alias": ["币别", "货币"], "fields": "FCurrencyId,FNumber,FName,FSymbol"},

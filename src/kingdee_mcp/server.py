@@ -41,6 +41,48 @@ _EP = {
 # Session 缓存（避免每次请求都重新登录）
 _session_id: Optional[str] = None
 
+# ─────────────────────────────────────────────
+# 常用表单目录（form_id 映射）
+# ─────────────────────────────────────────────
+FORM_CATALOG = {
+    # 基础资料
+    "BD_Material": {"name": "物料", "alias": ["物料", "材料", "商品", "产品"], "fields": "FMaterialId,FNumber,FName,FSpecification,FBaseUnitId.FName"},
+    "BD_Customer": {"name": "客户", "alias": ["客户", "客户档案"], "fields": "FCustId,FNumber,FName,FShortName,FContact,FPhone"},
+    "BD_Supplier": {"name": "供应商", "alias": ["供应商", "供应商档案", "厂家"], "fields": "FSupplierId,FNumber,FName,FShortName,FContact,FPhone"},
+    "BD_Department": {"name": "部门", "alias": ["部门", "组织"], "fields": "FDeptId,FNumber,FName,FFullName"},
+    "BD_Empinfo": {"name": "员工", "alias": ["员工", "人员", "职员", "用户"], "fields": "FID,FStaffNumber,FName,FDeptId.FName,FPost"},
+    "BD_Stock": {"name": "仓库", "alias": ["仓库", "库房", "仓位"], "fields": "FStockId,FNumber,FName,FGroup.FName"},
+    "BD_Unit": {"name": "计量单位", "alias": ["单位", "计量单位"], "fields": "FUnitId,FNumber,FName"},
+    "BD_Currency": {"name": "币别", "alias": ["币别", "货币"], "fields": "FCurrencyId,FNumber,FName,FSymbol"},
+
+    # 采购
+    "PUR_PurchaseOrder": {"name": "采购订单", "alias": ["采购订单", "采购单", "PO"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FTotalAmount"},
+    "PUR_ReceiveBill": {"name": "收料通知单", "alias": ["收料通知", "到货通知"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName"},
+    "PUR_MRB": {"name": "采购退料单", "alias": ["采购退料", "退货单"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName"},
+
+    # 销售
+    "SAL_SaleOrder": {"name": "销售订单", "alias": ["销售订单", "销售单", "SO", "订单"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName,FTotalAmount"},
+    "SAL_OUTSTOCK": {"name": "销售出库单", "alias": ["销售出库", "出货单", "发货单"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName"},
+    "SAL_RETURNSTOCK": {"name": "销售退货单", "alias": ["销售退货", "退货"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName"},
+
+    # 库存
+    "STK_InStock": {"name": "采购入库单", "alias": ["采购入库", "入库单", "入库"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockOrgId.FName"},
+    "STK_MisDelivery": {"name": "其他出库单", "alias": ["其他出库", "杂发", "领料"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockOrgId.FName"},
+    "STK_Miscellaneous": {"name": "其他入库单", "alias": ["其他入库", "杂收"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockOrgId.FName"},
+    "STK_TransferDirect": {"name": "直接调拨单", "alias": ["调拨", "调拨单", "库存调拨"], "fields": "FID,FBillNo,FDate,FDocumentStatus"},
+    "STK_Inventory": {"name": "即时库存", "alias": ["库存", "即时库存", "库存查询"], "fields": "FMaterialId.FNumber,FMaterialId.FName,FStockId.FName,FBaseQty"},
+    "STK_StockCountInput": {"name": "盘点单", "alias": ["盘点", "盘点单", "库存盘点"], "fields": "FID,FBillNo,FDate,FDocumentStatus"},
+
+    # 财务
+    "AP_Payable": {"name": "应付单", "alias": ["应付", "应付单", "应付账款"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName"},
+    "AR_Receivable": {"name": "应收单", "alias": ["应收", "应收单", "应收账款"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName"},
+
+    # 生产
+    "PRD_MO": {"name": "生产订单", "alias": ["生产订单", "生产单", "MO", "工单"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FMaterialId.FName,FQty"},
+    "PRD_PickMtrl": {"name": "生产领料单", "alias": ["生产领料", "领料单"], "fields": "FID,FBillNo,FDate,FDocumentStatus"},
+    "PRD_Instock": {"name": "产品入库单", "alias": ["产品入库", "完工入库"], "fields": "FID,FBillNo,FDate,FDocumentStatus"},
+}
+
 
 # ─────────────────────────────────────────────
 # 通用工具函数
@@ -546,6 +588,90 @@ async def kingdee_delete_bills(params: BillIdsInput) -> str:
         return _fmt(result)
     except Exception as e:
         return _err(e)
+
+
+# ─────────────────────────────────────────────
+# 元数据查询工具
+# ─────────────────────────────────────────────
+
+class FormSearchInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    keyword: str = Field(default="", description="搜索关键词，如'员工'、'采购'、'库存'等，留空返回所有")
+
+
+class FieldQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(..., description="表单标识，如 BD_Material、PUR_PurchaseOrder")
+
+
+@mcp.tool(
+    name="kingdee_list_forms",
+    annotations={"title": "查询可用表单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_list_forms(params: FormSearchInput) -> str:
+    """搜索金蝶系统中可用的表单类型（form_id）。
+
+    不知道 form_id 时，先调用此工具搜索。例如：
+    - 输入"员工"返回 BD_Empinfo
+    - 输入"采购"返回采购相关的表单列表
+    - 留空返回所有常用表单
+
+    Returns:
+        str: JSON 格式的表单列表，含 form_id、名称、推荐字段
+    """
+    keyword = params.keyword.lower()
+    results = []
+
+    for form_id, info in FORM_CATALOG.items():
+        # 匹配名称或别名
+        if not keyword or keyword in info["name"].lower() or any(keyword in alias.lower() for alias in info["alias"]):
+            results.append({
+                "form_id": form_id,
+                "name": info["name"],
+                "keywords": info["alias"],
+                "recommended_fields": info["fields"]
+            })
+
+    return _fmt({
+        "count": len(results),
+        "tip": "使用 form_id 调用 kingdee_query_bills 查询数据，或调用 kingdee_get_fields 获取完整字段列表",
+        "forms": results
+    })
+
+
+@mcp.tool(
+    name="kingdee_get_fields",
+    annotations={"title": "获取表单字段", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_get_fields(params: FieldQueryInput) -> str:
+    """获取指定表单的字段列表。
+
+    不知道查询哪些字段时，先调用此工具。返回该表单的推荐字段和使用说明。
+
+    Returns:
+        str: JSON 格式的字段信息
+    """
+    form_id = params.form_id
+    info = FORM_CATALOG.get(form_id)
+
+    if info:
+        return _fmt({
+            "form_id": form_id,
+            "name": info["name"],
+            "recommended_fields": info["fields"],
+            "field_list": info["fields"].split(","),
+            "tip": "字段格式说明：FXxx 是普通字段，FXxx.FName 是关联字段取名称，FXxx.FNumber 是取编码"
+        })
+    else:
+        # 返回通用建议
+        return _fmt({
+            "form_id": form_id,
+            "name": "未知表单",
+            "tip": "此表单不在常用目录中，建议尝试以下通用字段：FID,FBillNo,FNumber,FName,FDate,FDocumentStatus",
+            "common_fields": ["FID", "FBillNo", "FNumber", "FName", "FDate", "FDocumentStatus", "FCreateDate", "FModifyDate"]
+        })
 
 
 # ─────────────────────────────────────────────

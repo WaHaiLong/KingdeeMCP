@@ -84,7 +84,14 @@ uvx kingdee-mcp
 
 ## 可用工具
 
-### 查询类（只读）
+### 元数据查询
+
+| 工具 | 说明 |
+|------|------|
+| `kingdee_list_forms` | 搜索可用表单（不知道 form_id 时用） |
+| `kingdee_get_fields` | 获取表单字段列表 |
+
+### 数据查询（只读）
 
 | 工具 | 说明 |
 |------|------|
@@ -97,7 +104,7 @@ uvx kingdee-mcp
 | `kingdee_query_materials` | 查询物料档案 |
 | `kingdee_query_partners` | 查询客户/供应商 |
 
-### 操作类
+### 单据操作
 
 | 工具 | 说明 |
 |------|------|

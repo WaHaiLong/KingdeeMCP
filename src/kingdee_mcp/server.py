@@ -549,7 +549,12 @@ async def kingdee_delete_bills(params: BillIdsInput) -> str:
 
 
 # ─────────────────────────────────────────────
-# 启动
+# 入口函数
 # ─────────────────────────────────────────────
-if __name__ == "__main__":
+def main():
+    """MCP Server 入口点"""
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

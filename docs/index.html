@@ -1,0 +1,1298 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kingdee MCP Server - 让 AI 直接操作金蝶云星空</title>
+  <meta name="description" content="金蝶云星空 MCP Server，支持 Claude Desktop、Cursor、Windsurf、Cline 等所有 MCP 兼容客户端">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --secondary: #64748b;
+      --background: #0f172a;
+      --surface: #1e293b;
+      --surface-light: #334155;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --border: #334155;
+      --success: #10b981;
+      --code-bg: #0d1117;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--background);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* Header */
+    header {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      background: rgba(15, 23, 42, 0.9);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      height: 64px;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      font-size: 1.25rem;
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    .logo svg {
+      width: 32px;
+      height: 32px;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 32px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover {
+      color: var(--text);
+    }
+
+    .github-btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+
+    .github-btn:hover {
+      background: var(--surface-light);
+      border-color: var(--text-muted);
+    }
+
+    /* Hero */
+    .hero {
+      padding: 160px 0 100px;
+      text-align: center;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      background: rgba(37, 99, 235, 0.15);
+      border: 1px solid rgba(37, 99, 235, 0.3);
+      border-radius: 20px;
+      color: #60a5fa;
+      font-size: 0.85rem;
+      font-weight: 500;
+      margin-bottom: 24px;
+    }
+
+    .hero h1 {
+      font-size: 3.5rem;
+      font-weight: 700;
+      line-height: 1.1;
+      margin-bottom: 24px;
+      background: linear-gradient(135deg, #fff 0%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero p {
+      font-size: 1.25rem;
+      color: var(--text-muted);
+      max-width: 600px;
+      margin: 0 auto 40px;
+    }
+
+    .hero-buttons {
+      display: flex;
+      gap: 16px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 28px;
+      border-radius: 10px;
+      font-size: 1rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: var(--primary-dark);
+      transform: translateY(-2px);
+    }
+
+    .btn-secondary {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .btn-secondary:hover {
+      background: var(--surface-light);
+    }
+
+    /* Clients */
+    .clients {
+      margin-top: 60px;
+      text-align: center;
+    }
+
+    .clients-label {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 20px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .clients-grid {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 32px;
+      flex-wrap: wrap;
+    }
+
+    .client-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 20px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+
+    .client-item:hover {
+      border-color: var(--primary);
+      color: var(--text);
+      transform: translateY(-2px);
+    }
+
+    .client-item svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    /* Badges */
+    .badges {
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 32px;
+      flex-wrap: wrap;
+    }
+
+    .badges a {
+      transition: transform 0.2s;
+    }
+
+    .badges a:hover {
+      transform: translateY(-2px);
+    }
+
+    /* Quick Install */
+    .quick-install {
+      margin-top: 40px;
+      max-width: 500px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .quick-install-label {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+
+    .install-box {
+      display: flex;
+      align-items: center;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .install-box code {
+      flex: 1;
+      padding: 16px 20px;
+      background: none;
+      color: #e2e8f0;
+      font-size: 1rem;
+    }
+
+    .copy-btn {
+      padding: 16px 20px;
+      background: var(--surface);
+      border: none;
+      border-left: 1px solid var(--border);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.85rem;
+    }
+
+    .copy-btn:hover {
+      background: var(--surface-light);
+      color: var(--text);
+    }
+
+    .copy-btn.copied {
+      color: var(--success);
+    }
+
+    .copy-btn svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* Code block copy button */
+    .code-wrapper {
+      position: relative;
+    }
+
+    .code-wrapper pre {
+      margin: 0;
+    }
+
+    .code-copy-btn {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      padding: 8px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.2s;
+      opacity: 0;
+    }
+
+    .code-wrapper:hover .code-copy-btn {
+      opacity: 1;
+    }
+
+    .code-copy-btn:hover {
+      background: var(--surface-light);
+      color: var(--text);
+    }
+
+    .code-copy-btn.copied {
+      color: var(--success);
+      border-color: var(--success);
+    }
+
+    .code-copy-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    /* Features */
+    .features {
+      padding: 100px 0;
+    }
+
+    .section-header {
+      text-align: center;
+      margin-bottom: 60px;
+    }
+
+    .section-header h2 {
+      font-size: 2.25rem;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+
+    .section-header p {
+      color: var(--text-muted);
+      font-size: 1.1rem;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 24px;
+    }
+
+    .feature-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 32px;
+      transition: all 0.3s;
+    }
+
+    .feature-card:hover {
+      border-color: var(--primary);
+      transform: translateY(-4px);
+    }
+
+    .feature-icon {
+      width: 48px;
+      height: 48px;
+      background: rgba(37, 99, 235, 0.15);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 20px;
+    }
+
+    .feature-icon svg {
+      width: 24px;
+      height: 24px;
+      color: var(--primary);
+    }
+
+    .feature-card h3 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    .feature-card p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+
+    /* Tools */
+    .tools {
+      padding: 100px 0;
+      background: var(--surface);
+    }
+
+    .tools-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+    }
+
+    .tool-card {
+      background: var(--background);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      transition: all 0.2s;
+    }
+
+    .tool-card:hover {
+      border-color: var(--primary);
+    }
+
+    .tool-category {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--primary);
+      margin-bottom: 8px;
+    }
+
+    .tool-name {
+      font-family: 'SF Mono', Monaco, Consolas, monospace;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+
+    .tool-desc {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+
+    /* Installation */
+    .installation {
+      padding: 100px 0;
+    }
+
+    .install-steps {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .install-step {
+      display: flex;
+      gap: 24px;
+      margin-bottom: 40px;
+    }
+
+    .step-number {
+      flex-shrink: 0;
+      width: 40px;
+      height: 40px;
+      background: var(--primary);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 1.1rem;
+    }
+
+    .step-content {
+      flex: 1;
+    }
+
+    .step-content h3 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    .step-content p {
+      color: var(--text-muted);
+      margin-bottom: 16px;
+    }
+
+    code {
+      font-family: 'SF Mono', Monaco, Consolas, monospace;
+      background: var(--code-bg);
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 0.9em;
+      color: #f472b6;
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      overflow-x: auto;
+      margin: 16px 0;
+    }
+
+    pre code {
+      background: none;
+      padding: 0;
+      color: #e2e8f0;
+      font-size: 0.9rem;
+      line-height: 1.7;
+    }
+
+    .config-note {
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      border-radius: 12px;
+      padding: 20px;
+      margin-top: 40px;
+    }
+
+    .config-note h4 {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--success);
+      font-size: 1rem;
+      margin-bottom: 12px;
+    }
+
+    .config-note p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+
+    /* Examples */
+    .examples {
+      padding: 100px 0;
+      background: var(--surface);
+    }
+
+    .examples-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+      gap: 24px;
+    }
+
+    .example-card {
+      background: var(--background);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+    }
+
+    .example-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .example-type {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+
+    .example-type.query {
+      background: rgba(37, 99, 235, 0.15);
+      color: #60a5fa;
+    }
+
+    .example-type.action {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--success);
+    }
+
+    .example-prompt {
+      font-size: 0.95rem;
+      color: var(--text-muted);
+    }
+
+    .example-body {
+      padding: 20px;
+    }
+
+    .example-body pre {
+      margin: 0;
+    }
+
+    /* FAQ */
+    .faq {
+      padding: 100px 0;
+    }
+
+    .faq-list {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .faq-item {
+      border-bottom: 1px solid var(--border);
+      padding: 24px 0;
+    }
+
+    .faq-item:first-child {
+      padding-top: 0;
+    }
+
+    .faq-question {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: var(--text);
+    }
+
+    .faq-answer {
+      color: var(--text-muted);
+      line-height: 1.7;
+    }
+
+    /* Footer */
+    footer {
+      padding: 60px 0;
+      border-top: 1px solid var(--border);
+      text-align: center;
+    }
+
+    .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 32px;
+      margin-bottom: 24px;
+    }
+
+    .footer-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .footer-links a:hover {
+      color: var(--text);
+    }
+
+    .footer-copy {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .hero h1 {
+        font-size: 2.5rem;
+      }
+
+      .nav-links {
+        display: none;
+      }
+
+      .features-grid,
+      .tools-grid,
+      .examples-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .install-step {
+        flex-direction: column;
+        gap: 16px;
+      }
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--background);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--surface-light);
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--secondary);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container">
+      <nav>
+        <a href="#" class="logo">
+          <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect width="32" height="32" rx="8" fill="#2563eb"/>
+            <path d="M8 16L14 22L24 10" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Kingdee MCP
+        </a>
+        <ul class="nav-links">
+          <li><a href="#features">功能</a></li>
+          <li><a href="#tools">工具列表</a></li>
+          <li><a href="#install">安装</a></li>
+          <li><a href="#examples">示例</a></li>
+          <li><a href="#faq">常见问题</a></li>
+        </ul>
+        <a href="https://github.com/your-username/kingdee-mcp" class="github-btn" target="_blank">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+          </svg>
+          GitHub
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="container">
+        <div class="badge">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+          </svg>
+          MCP Server
+        </div>
+        <h1>让 AI 直接操作<br>金蝶云星空</h1>
+        <p>金蝶云星空 ERP 的 MCP Server，支持 Claude Desktop、Cursor、Windsurf、OpenClaw 等所有 MCP 兼容客户端。通过 OpenClaw 还可以在 <strong>微信、WhatsApp、Telegram</strong> 中直接操作金蝶。</p>
+        <div class="hero-buttons">
+          <a href="#install" class="btn btn-primary">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+            开始使用
+          </a>
+          <a href="#tools" class="btn btn-secondary">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <path d="M3 9h18M9 21V9"/>
+            </svg>
+            查看 API
+          </a>
+        </div>
+
+        <!-- Quick Install -->
+        <div class="quick-install">
+          <div class="quick-install-label">快速安装</div>
+          <div class="install-box">
+            <code>pip install kingdee-mcp</code>
+            <button class="copy-btn" onclick="copyInstall(this)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              复制
+            </button>
+          </div>
+        </div>
+
+        <!-- PyPI Badges -->
+        <div class="badges">
+          <a href="https://pypi.org/project/kingdee-mcp/" target="_blank">
+            <img src="https://img.shields.io/pypi/v/kingdee-mcp?style=flat-square&color=2563eb" alt="PyPI version">
+          </a>
+          <a href="https://pypi.org/project/kingdee-mcp/" target="_blank">
+            <img src="https://img.shields.io/pypi/dm/kingdee-mcp?style=flat-square&color=10b981" alt="Downloads">
+          </a>
+          <a href="https://pypi.org/project/kingdee-mcp/" target="_blank">
+            <img src="https://img.shields.io/pypi/pyversions/kingdee-mcp?style=flat-square" alt="Python versions">
+          </a>
+          <a href="https://github.com/yourusername/kingdee-mcp/blob/main/LICENSE" target="_blank">
+            <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
+          </a>
+        </div>
+
+        <!-- Supported Clients -->
+        <div class="clients">
+          <div class="clients-label">支持的客户端</div>
+          <div class="clients-grid">
+            <div class="client-item">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+              </svg>
+              Claude Desktop
+            </div>
+            <div class="client-item">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M13.325 3.05L8.667 20.432l1.932.518 4.658-17.382-1.932-.518zM7.612 18.36l1.36-1.448-.001-.019-5.094-4.78 5.095-4.779-.001-.02-1.36-1.448-6.484 6.248 6.485 6.246zm8.776 0l6.485-6.246-6.485-6.248-1.36 1.448-.001.02 5.095 4.779-5.094 4.78-.001.019 1.36 1.448z"/>
+              </svg>
+              Cursor
+            </div>
+            <div class="client-item">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2L2 19h20L12 2zm0 4l7 11H5l7-11z"/>
+              </svg>
+              Windsurf
+            </div>
+            <div class="client-item">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V6h16v12zM6 10h2v2H6v-2zm0 4h8v2H6v-2zm10 0h2v2h-2v-2zm-6-4h8v2h-8v-2z"/>
+              </svg>
+              Cline
+            </div>
+            <div class="client-item">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z"/>
+              </svg>
+              Continue
+            </div>
+            <div class="client-item" title="通过 WhatsApp/Telegram/微信操作">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+              </svg>
+              OpenClaw
+            </div>
+            <div class="client-item">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M20 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zM5 18l3.5-4.5 2.5 3 3.5-4.5 4.5 6H5z"/>
+              </svg>
+              更多...
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="features" class="features">
+      <div class="container">
+        <div class="section-header">
+          <h2>为什么选择 Kingdee MCP</h2>
+          <p>简单、高效、安全地让 AI 助手接入你的金蝶系统</p>
+        </div>
+        <div class="features-grid">
+          <div class="feature-card">
+            <div class="feature-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+              </svg>
+            </div>
+            <h3>异步高性能</h3>
+            <p>基于 async/await 异步架构，支持并发请求，自动 Session 缓存和重试机制。</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <path d="M3 9h18M9 21V9"/>
+              </svg>
+            </div>
+            <h3>13+ 实用工具</h3>
+            <p>涵盖采购、销售、库存、基础资料等核心业务模块，开箱即用。</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              </svg>
+            </div>
+            <h3>安全认证</h3>
+            <p>采用金蝶官方 WebAPI 认证，支持 AppSecret 方式登录，凭证本地存储。</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 6v6l4 2"/>
+              </svg>
+            </div>
+            <h3>自动重试</h3>
+            <p>Session 过期自动重新登录，连接失败自动重试，稳定可靠。</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14,2 14,8 20,8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/>
+                <line x1="16" y1="17" x2="8" y2="17"/>
+              </svg>
+            </div>
+            <h3>类型安全</h3>
+            <p>基于 Pydantic 的数据验证，所有输入参数都有类型检查和自动补全。</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="16,18 22,12 16,6"/>
+                <polyline points="8,6 2,12 8,18"/>
+              </svg>
+            </div>
+            <h3>易于扩展</h3>
+            <p>基于 FastMCP 框架，轻松添加自定义工具和业务逻辑。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tools" class="tools">
+      <div class="container">
+        <div class="section-header">
+          <h2>支持的工具列表</h2>
+          <p>共 13 个工具，覆盖核心业务场景</p>
+        </div>
+        <div class="tools-grid">
+          <div class="tool-card">
+            <div class="tool-category">通用查询</div>
+            <div class="tool-name">kingdee_query_bills</div>
+            <div class="tool-desc">通用单据查询，支持任意 form_id</div>
+          </div>
+          <div class="tool-card">
+            <div class="tool-category">通用查询</div>
+            <div class="tool-name">kingdee_view_bill</div>
+            <div class="tool-desc">查看单据完整详情</div>
+          </div>
+          <div class="tool-card">
+            <div class="tool-category">供应链</div>
+            <div class="tool-name">kingdee_query_purchase_orders</div>
+            <div class="tool-desc">查询采购订单</div>
+          </div>
+          <div class="tool-card">
+            <div class="tool-category">供应链</div>
+            <div class="tool-name">kingdee_query_sale_orders</div>
+            <div class="tool-desc">查询销售订单</div>
+          </div>
+          <div class="tool-card">
+            <div class="tool-category">库存</div>
+            <div class="tool-name">kingdee_query_stock_bills</div>
+            <div class="tool-desc">查询出入库单据</div>
+          </div>
+          <div class="tool-card">
+            <div class="tool-category">库存</div>
+            <div class="tool-name">kingdee_query_inventory</div>
+            <div class="tool-desc">查询即时库存</div>
+          </div>
+          <div class="tool-card">
+            <div class="tool-category">基础资料</div>
+            <div class="tool-name">kingdee_query_materials</div>
+            <div class="tool-desc">查询物料档案</div>
+          </div>
+          <div class="tool-card">
+            <div class="tool-category">基础资料</div>
+            <div class="tool-name">kingdee_query_partners</div>
+            <div class="tool-desc">查询客户/供应商</div>
+          </div>
+          <div class="tool-card">
+            <div class="tool-category">单据操作</div>
+            <div class="tool-name">kingdee_save_bill</div>
+            <div class="tool-desc">新建或修改单据</div>
+          </div>
+          <div class="tool-card">
+            <div class="tool-category">单据操作</div>
+            <div class="tool-name">kingdee_submit_bills</div>
+            <div class="tool-desc">提交单据</div>
+          </div>
+          <div class="tool-card">
+            <div class="tool-category">单据操作</div>
+            <div class="tool-name">kingdee_audit_bills</div>
+            <div class="tool-desc">审核单据</div>
+          </div>
+          <div class="tool-card">
+            <div class="tool-category">单据操作</div>
+            <div class="tool-name">kingdee_unaudit_bills</div>
+            <div class="tool-desc">反审核单据</div>
+          </div>
+          <div class="tool-card">
+            <div class="tool-category">单据操作</div>
+            <div class="tool-name">kingdee_delete_bills</div>
+            <div class="tool-desc">删除单据</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="install" class="installation">
+      <div class="container">
+        <div class="section-header">
+          <h2>快速安装</h2>
+          <p>只需几步，即可让 AI 连接你的金蝶系统</p>
+        </div>
+        <div class="install-steps">
+          <div class="install-step">
+            <div class="step-number">1</div>
+            <div class="step-content">
+              <h3>安装 MCP Server</h3>
+              <p>确保已安装 Python 3.10+，通过 pip 安装。</p>
+              <div class="code-wrapper">
+                <pre><code>pip install kingdee-mcp</code></pre>
+                <button class="code-copy-btn" onclick="copyCode(this)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  复制
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="install-step">
+            <div class="step-number">2</div>
+            <div class="step-content">
+              <h3>金蝶后台授权</h3>
+              <p>在金蝶云星空中创建集成用户并生成应用凭证。</p>
+              <p>进入 <strong>系统管理 → 第三方系统登录授权 → 新增</strong>，新建一个集成用户（不要用 Administrator），然后生成应用ID和应用密钥。</p>
+            </div>
+          </div>
+          <div class="install-step">
+            <div class="step-number">3</div>
+            <div class="step-content">
+              <h3>配置 MCP 客户端</h3>
+              <p>在你的 MCP 客户端配置文件中添加以下内容。</p>
+              <div class="code-wrapper">
+                <pre><code>{
+  "mcpServers": {
+    "kingdee": {
+      "command": "uvx",
+      "args": ["kingdee-mcp"],
+      "env": {
+        "KINGDEE_SERVER_URL": "http://your-server/k3cloud/",
+        "KINGDEE_ACCT_ID": "your_acct_id",
+        "KINGDEE_USERNAME": "API集成",
+        "KINGDEE_APP_ID": "your_app_id",
+        "KINGDEE_APP_SEC": "your_app_secret"
+      }
+    }
+  }
+}</code></pre>
+                <button class="code-copy-btn" onclick="copyCode(this)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  复制
+                </button>
+              </div>
+              <p style="margin-top: 16px; font-size: 0.9rem; color: var(--text-muted);">
+                <strong>配置文件位置：</strong><br>
+                Claude Desktop (Win): <code>%APPDATA%\Claude\claude_desktop_config.json</code><br>
+                Claude Desktop (Mac): <code>~/Library/Application Support/Claude/claude_desktop_config.json</code><br>
+                Cursor: Settings → MCP → Add Server<br>
+                Claude Code CLI: <code>~/.claude/settings.json</code>
+              </p>
+            </div>
+          </div>
+          <div class="install-step">
+            <div class="step-number">4</div>
+            <div class="step-content">
+              <h3>重启客户端</h3>
+              <p>完成配置后，重启你的 MCP 客户端即可开始使用。</p>
+            </div>
+          </div>
+          <div class="config-note">
+            <h4>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                <polyline points="22,4 12,14.01 9,11.01"/>
+              </svg>
+              安全提示
+            </h4>
+            <p>请确保 <code>.env</code> 文件不会被提交到代码仓库。建议将其加入 <code>.gitignore</code>。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="examples" class="examples">
+      <div class="container">
+        <div class="section-header">
+          <h2>使用示例</h2>
+          <p>配置完成后，直接用自然语言与 AI 交互</p>
+        </div>
+        <div class="examples-grid">
+          <div class="example-card">
+            <div class="example-header">
+              <span class="example-type query">查询</span>
+              <span class="example-prompt">查询最近20条已审核的采购订单</span>
+            </div>
+            <div class="example-body">
+              <pre><code>kingdee_query_purchase_orders(
+  top: 20,
+  filter_string: "FDocumentStatus = 'C'",
+  order_by: "FDate DESC"
+)</code></pre>
+            </div>
+          </div>
+          <div class="example-card">
+            <div class="example-header">
+              <span class="example-type query">查询</span>
+              <span class="example-prompt">查一下物料编码 MAT001 的即时库存</span>
+            </div>
+            <div class="example-body">
+              <pre><code>kingdee_query_inventory(
+  filter_string: "FMaterialNumber = 'MAT001'"
+)</code></pre>
+            </div>
+          </div>
+          <div class="example-card">
+            <div class="example-header">
+              <span class="example-type query">查询</span>
+              <span class="example-prompt">查询客户编码 C001 的所有销售订单</span>
+            </div>
+            <div class="example-body">
+              <pre><code>kingdee_query_sale_orders(
+  filter_string: "FSupplierNumber = 'C001'"
+)</code></pre>
+            </div>
+          </div>
+          <div class="example-card">
+            <div class="example-header">
+              <span class="example-type action">操作</span>
+              <span class="example-prompt">帮我新建一张采购订单</span>
+            </div>
+            <div class="example-body">
+              <pre><code>kingdee_save_bill(
+  form_id: "PUR_PurchaseOrder",
+  data: {
+    FSupplierId: { FNumber: "S001" },
+    FMaterialId: { FNumber: "MAT001" },
+    FQty: 100,
+    FTaxPrice: 10.5
+  }
+)</code></pre>
+            </div>
+          </div>
+          <div class="example-card">
+            <div class="example-header">
+              <span class="example-type action">操作</span>
+              <span class="example-prompt">审核这几张采购入库单</span>
+            </div>
+            <div class="example-body">
+              <pre><code>kingdee_audit_bills(
+  form_id: "STK_Instock",
+  bill_ids: ["12345", "12346"]
+)</code></pre>
+            </div>
+          </div>
+          <div class="example-card">
+            <div class="example-header">
+              <span class="example-type action">操作</span>
+              <span class="example-prompt">反审核销售订单 SO2024001</span>
+            </div>
+            <div class="example-body">
+              <pre><code>kingdee_unaudit_bills(
+  form_id: "SAL_SaleOrder",
+  bill_ids: ["SO2024001"]
+)</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq" class="faq">
+      <div class="container">
+        <div class="section-header">
+          <h2>常见问题</h2>
+          <p>遇到问题？这里可能有答案</p>
+        </div>
+        <div class="faq-list">
+          <div class="faq-item">
+            <div class="faq-question">Q: 提示认证失败怎么办？</div>
+            <div class="faq-answer">检查 AppID / AppSec 是否正确，集成用户是否有对应模块的访问权限。建议先在金蝶后台测试 API 是否正常。</div>
+          </div>
+          <div class="faq-item">
+            <div class="faq-question">Q: 连接超时怎么解决？</div>
+            <div class="faq-answer">检查 KINGDEE_SERVER_URL 是否正确（需要包含 /k3cloud/ 后缀），确保服务器在同一局域网内或已开启外网访问。</div>
+          </div>
+          <div class="faq-item">
+            <div class="faq-question">Q: 查询结果为空是怎么回事？</div>
+            <div class="faq-answer">检查 filter_string 过滤条件语法。金蝶使用类 SQL 语法，例如：<code>FDocumentStatus = 'C'</code> 表示已审核状态。</div>
+          </div>
+          <div class="faq-item">
+            <div class="faq-question">Q: 支持金蝶云星空公有云吗？</div>
+            <div class="faq-answer">目前主要测试环境为私有云。公有云用户可能需要调整认证方式和 API 地址。</div>
+          </div>
+          <div class="faq-item">
+            <div class="faq-question">Q: 如何添加自定义业务逻辑？</div>
+            <div class="faq-answer">基于 FastMCP 框架，可以直接在 server.py 中添加新的 @mcp.tool() 装饰器方法即可扩展功能。</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container">
+      <div class="footer-links">
+        <a href="https://github.com/your-username/kingdee-mcp" target="_blank">GitHub</a>
+        <a href="https://modelcontextprotocol.io/" target="_blank">MCP 文档</a>
+        <a href="https://www.kingdee.com/" target="_blank">金蝶官网</a>
+      </div>
+      <p class="footer-copy">Kingdee MCP Server - 支持所有 MCP 兼容客户端</p>
+    </div>
+  </footer>
+
+  <script>
+    // Smooth scroll for anchor links
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const target = document.querySelector(this.getAttribute('href'));
+        if (target) {
+          target.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start'
+          });
+        }
+      });
+    });
+
+    // Header background on scroll
+    const header = document.querySelector('header');
+    window.addEventListener('scroll', () => {
+      if (window.scrollY > 50) {
+        header.style.background = 'rgba(15, 23, 42, 0.98)';
+      } else {
+        header.style.background = 'rgba(15, 23, 42, 0.9)';
+      }
+    });
+
+    // Copy install command
+    function copyInstall(btn) {
+      const text = 'pip install kingdee-mcp';
+      navigator.clipboard.writeText(text).then(() => {
+        btn.classList.add('copied');
+        btn.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="20,6 9,17 4,12"/>
+          </svg>
+          已复制
+        `;
+        setTimeout(() => {
+          btn.classList.remove('copied');
+          btn.innerHTML = `
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2"/>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+            复制
+          `;
+        }, 2000);
+      });
+    }
+
+    // Copy code block
+    function copyCode(btn) {
+      const codeBlock = btn.parentElement.querySelector('code');
+      const text = codeBlock.textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        btn.classList.add('copied');
+        btn.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20,6 9,17 4,12"/></svg>
+          已复制
+        `;
+        setTimeout(() => {
+          btn.classList.remove('copied');
+          btn.innerHTML = `
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            复制
+          `;
+        }, 2000);
+      });
+    }
+  </script>
+</body>
+</html>

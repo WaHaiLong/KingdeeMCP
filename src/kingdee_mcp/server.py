@@ -36,6 +36,7 @@ _EP = {
     "audit":   "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.Audit.common.kdsvc",
     "unaudit": "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.UnAudit.common.kdsvc",
     "delete":  "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.Delete.common.kdsvc",
+    "push":    "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.Push.common.kdsvc",
 }
 
 # Session 缓存（避免每次请求都重新登录）
@@ -590,9 +591,46 @@ async def kingdee_delete_bills(params: BillIdsInput) -> str:
         return _err(e)
 
 
+@mcp.tool(
+    name="kingdee_push_bill",
+    annotations={"title": "下推单据", "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False}
+)
+async def kingdee_push_bill(params: PushDownInput) -> str:
+    """将源单据下推生成目标单据（如销售订单下推销售出库单、采购订单下推采购入库单）。
+
+    常用下推场景：
+    - 销售订单 → 销售出库单:  form_id=SAL_SaleOrder,    target_form_id=SAL_OUTSTOCK
+    - 采购订单 → 采购入库单:  form_id=PUR_PurchaseOrder, target_form_id=STK_InStock
+    - 采购订单 → 收料通知单:  form_id=PUR_PurchaseOrder, target_form_id=PUR_ReceiveBill
+    - 销售订单 → 销售退货单:  form_id=SAL_SaleOrder,    target_form_id=SAL_RETURNSTOCK
+
+    Returns:
+        str: JSON，含下推生成的目标单据 FID 和单据编号
+    """
+    try:
+        payload = [params.form_id, {
+            "TargetFormId": params.target_form_id,
+            "SourceIds":    ",".join(params.source_ids),
+            "RuleIds":      ",".join(params.rule_ids) if params.rule_ids else "",
+        }]
+        result = await _post("push", payload)
+        return _fmt(result)
+    except Exception as e:
+        return _err(e)
+
+
 # ─────────────────────────────────────────────
 # 元数据查询工具
 # ─────────────────────────────────────────────
+
+class PushDownInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(..., description="源单据类型，如 SAL_SaleOrder、PUR_PurchaseOrder")
+    target_form_id: str = Field(..., description="目标单据类型，如 SAL_OUTSTOCK、STK_InStock")
+    source_ids: List[str] = Field(..., description="源单据内码 FID 列表", min_length=1)
+    rule_ids: List[str] = Field(default_factory=list, description="转换规则 ID 列表，留空使用默认规则")
+
 
 class FormSearchInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")

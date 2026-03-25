@@ -82,6 +82,10 @@ FORM_CATALOG = {
     "PRD_MO": {"name": "生产订单", "alias": ["生产订单", "生产单", "MO", "工单"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FMaterialId.FName,FQty"},
     "PRD_PickMtrl": {"name": "生产领料单", "alias": ["生产领料", "领料单"], "fields": "FID,FBillNo,FDate,FDocumentStatus"},
     "PRD_Instock": {"name": "产品入库单", "alias": ["产品入库", "完工入库"], "fields": "FID,FBillNo,FDate,FDocumentStatus"},
+
+    # 费用报销
+    "ER_ExpenseRequest": {"name": "费用申请单", "alias": ["费用申请", "申请单"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FApplicantId.FName,FTotalAmount"},
+    "ER_ExpenseReimburse": {"name": "费用报销单", "alias": ["费用报销", "报销单", "报销"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FApplicantId.FName,FTotalReimAmount"},
 }
 
 
@@ -710,6 +714,227 @@ async def kingdee_get_fields(params: FieldQueryInput) -> str:
             "tip": "此表单不在常用目录中，建议尝试以下通用字段：FID,FBillNo,FNumber,FName,FDate,FDocumentStatus",
             "common_fields": ["FID", "FBillNo", "FNumber", "FName", "FDate", "FDocumentStatus", "FCreateDate", "FModifyDate"]
         })
+
+
+# ─────────────────────────────────────────────
+# 审批流工具
+# ─────────────────────────────────────────────
+
+class WorkflowQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(default="", description="单据类型，如 ER_ExpenseReimburse（费用报销单），留空查询所有")
+    status: str = Field(default="pending", description="状态：pending(待审批)、approved(已通过)、rejected(已驳回)、all(全部)")
+    limit: int = Field(default=20, ge=1, le=100, description="返回数量")
+
+
+class WorkflowActionInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(..., description="单据类型，如 ER_ExpenseReimburse")
+    bill_id: str = Field(..., description="单据内码 FID")
+    action: str = Field(..., description="操作：approve(通过)、reject(驳回)")
+    opinion: str = Field(default="", description="审批意见")
+
+
+class WorkflowStatusInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(..., description="单据类型")
+    bill_id: str = Field(..., description="单据内码 FID")
+
+
+@mcp.tool(
+    name="kingdee_query_pending_approvals",
+    annotations={"title": "查询待审批单据", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_pending_approvals(params: WorkflowQueryInput) -> str:
+    """查询待审批的单据列表。
+
+    查询当前处于审批中状态（已提交、待审核）的单据。
+
+    Returns:
+        str: JSON 格式的待审批单据列表
+    """
+    try:
+        # 根据状态筛选
+        # 金蝶单据状态: A=创建, B=审核中, C=已审核, D=重新审核, Z=暂存
+        status_filter = ""
+        if params.status == "pending":
+            status_filter = "FDocumentStatus IN ('A', 'B', 'D')"  # 待审批: 创建/审核中/重新审核
+        elif params.status == "approved":
+            status_filter = "FDocumentStatus = 'C'"  # 已审核
+        elif params.status == "rejected":
+            status_filter = "FDocumentStatus = 'D'"  # 重新审核（相当于驳回）
+        else:
+            status_filter = "1=1"
+
+        # 如果指定了表单类型
+        if params.form_id:
+            form_ids = [params.form_id]
+        else:
+            # 默认查询常见需要审批的单据
+            form_ids = [
+                "PUR_PurchaseOrder",     # 采购订单
+                "SAL_SaleOrder",         # 销售订单
+                "STK_InStock",           # 采购入库单
+            ]
+
+        all_results = []
+        for fid in form_ids:
+            info = FORM_CATALOG.get(fid, {"name": fid})
+            # 使用基础字段，避免字段不存在的问题
+            fields = "FID,FBillNo,FDate,FDocumentStatus"
+
+            payload = [fid, {
+                "FormId": fid,
+                "FieldKeys": fields,
+                "FilterString": status_filter,
+                "OrderString": "FDate DESC",
+                "TopRowCount": params.limit
+            }]
+
+            try:
+                result = await _post("query", payload)
+                rows = _rows(result)
+                if rows:
+                    all_results.append({
+                        "form_id": fid,
+                        "form_name": info.get("name", fid),
+                        "count": len(rows),
+                        "data": rows
+                    })
+            except Exception:
+                continue
+
+        return _fmt({
+            "status_filter": params.status,
+            "total_forms": len(all_results),
+            "results": all_results
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_workflow_status",
+    annotations={"title": "查询单据审批状态", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_workflow_status(params: WorkflowStatusInput) -> str:
+    """查询单据的审批流状态。
+
+    返回单据当前的审批状态和单据详情。
+
+    Returns:
+        str: JSON 格式的审批状态信息
+    """
+    try:
+        # 查询单据详情
+        result = await _post("view", [params.form_id, {"Id": params.bill_id}])
+
+        if not result:
+            return _fmt({"error": "单据不存在"})
+
+        # 提取状态信息
+        bill_data = result.get("Result", {}).get("Result", result)
+
+        # 单据状态映射
+        status_map = {
+            "A": "创建",
+            "B": "审核中",
+            "C": "已审核",
+            "D": "重新审核",
+            "Z": "暂存"
+        }
+
+        doc_status = bill_data.get("FDocumentStatus", "")
+
+        return _fmt({
+            "form_id": params.form_id,
+            "bill_id": params.bill_id,
+            "document_status": doc_status,
+            "status_name": status_map.get(doc_status, "未知"),
+            "bill_no": bill_data.get("FBillNo", ""),
+            "bill_data": bill_data
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_workflow_approve",
+    annotations={"title": "审批通过", "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False}
+)
+async def kingdee_workflow_approve(params: WorkflowActionInput) -> str:
+    """审批通过单据。
+
+    对待审批的单据执行审批通过操作。
+
+    Returns:
+        str: 审批结果
+    """
+    try:
+        if params.action == "approve":
+            # 审核通过
+            result = await _post("audit", [params.form_id, {"Ids": params.bill_id}])
+            action_name = "审批通过"
+        elif params.action == "reject":
+            # 驳回 = 反审核
+            result = await _post("unaudit", [params.form_id, {"Ids": params.bill_id}])
+            action_name = "审批驳回"
+        else:
+            return _fmt({"error": f"不支持的操作: {params.action}"})
+
+        return _fmt({
+            "action": action_name,
+            "form_id": params.form_id,
+            "bill_id": params.bill_id,
+            "opinion": params.opinion or "无",
+            "result": result
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_expense_reimburse",
+    annotations={"title": "查询费用报销单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_expense_reimburse(params: QueryInput) -> str:
+    """查询费用报销单。
+
+    专门用于查询费用报销单据，支持按状态、金额、日期筛选。
+
+    Returns:
+        str: JSON 格式的费用报销单列表
+    """
+    try:
+        form_id = "ER_ExpenseReimburse"
+        field_keys = params.field_keys or "FID,FBillNo,FDate,FDocumentStatus,FApplicantId.FName,FTotalReimAmount,FDescription"
+
+        payload = [form_id, {
+            "FormId": form_id,
+            "FieldKeys": field_keys,
+            "FilterString": params.filter_string or "",
+            "OrderString": params.order_by or "FDate DESC",
+            "TopRowCount": params.limit,
+            "StartRow": params.offset
+        }]
+
+        result = await _post("query", payload)
+        rows = _rows(result)
+
+        return _fmt({
+            "form_id": form_id,
+            "form_name": "费用报销单",
+            "start_row": params.offset,
+            "count": len(rows),
+            "has_more": len(rows) >= params.limit,
+            "data": rows
+        })
+    except Exception as e:
+        return _err(e)
 
 
 # ─────────────────────────────────────────────

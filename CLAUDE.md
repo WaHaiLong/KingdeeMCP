@@ -66,7 +66,3 @@ This is a single-file MCP Server (`src/kingdee_mcp/server.py`) that bridges AI c
 
 The website at `https://wahailong.github.io/KingdeeMCP/` is a single static HTML file (`docs/index.html`). The deploy workflow (`.github/workflows/deploy-pages.yml`) triggers on push to `main` branch — **note the repo uses `master`**, so the workflow must be triggered manually via `workflow_dispatch` or the branch trigger needs updating.
 
-### Known Issues
-
-- `PushDownInput` model is defined at line ~631, *after* `kingdee_push_bill` at line ~602 that references it — this causes a `NameError` at import time. Move `PushDownInput` above `kingdee_push_bill` to fix.
-- `kingdee_query_expense_reimburse` references `params.order_by` and `params.offset` which don't exist on `QueryInput` (it has `order_string` and `start_row`) — this will raise `AttributeError` at runtime.

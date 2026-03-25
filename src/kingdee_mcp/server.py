@@ -595,6 +595,14 @@ async def kingdee_delete_bills(params: BillIdsInput) -> str:
         return _err(e)
 
 
+class PushDownInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(..., description="源单据类型，如 SAL_SaleOrder、PUR_PurchaseOrder")
+    target_form_id: str = Field(..., description="目标单据类型，如 SAL_OUTSTOCK、STK_InStock")
+    source_ids: List[str] = Field(..., description="源单据内码 FID 列表", min_length=1)
+    rule_ids: List[str] = Field(default_factory=list, description="转换规则 ID 列表，留空使用默认规则")
+
+
 @mcp.tool(
     name="kingdee_push_bill",
     annotations={"title": "下推单据", "readOnlyHint": False, "destructiveHint": False,
@@ -627,14 +635,6 @@ async def kingdee_push_bill(params: PushDownInput) -> str:
 # ─────────────────────────────────────────────
 # 元数据查询工具
 # ─────────────────────────────────────────────
-
-class PushDownInput(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    form_id: str = Field(..., description="源单据类型，如 SAL_SaleOrder、PUR_PurchaseOrder")
-    target_form_id: str = Field(..., description="目标单据类型，如 SAL_OUTSTOCK、STK_InStock")
-    source_ids: List[str] = Field(..., description="源单据内码 FID 列表", min_length=1)
-    rule_ids: List[str] = Field(default_factory=list, description="转换规则 ID 列表，留空使用默认规则")
-
 
 class FormSearchInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -917,9 +917,9 @@ async def kingdee_query_expense_reimburse(params: QueryInput) -> str:
             "FormId": form_id,
             "FieldKeys": field_keys,
             "FilterString": params.filter_string or "",
-            "OrderString": params.order_by or "FDate DESC",
+            "OrderString": params.order_string or "FDate DESC",
             "TopRowCount": params.limit,
-            "StartRow": params.offset
+            "StartRow": params.start_row
         }]
 
         result = await _post("query", payload)

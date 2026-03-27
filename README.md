@@ -227,6 +227,38 @@ uvx kingdee-mcp
 **Q: 支持金蝶云星空公有云吗？**
 支持。公有云和私有云使用相同的 AppSecret 认证方式，配置方式完全一致。
 
+## 配合 mcp-sqlserver-introspect 使用
+
+kingdee-mcp 提供两层能力：
+
+**第一层：ERP 操作层**（kingdee-mcp 内置）
+直接操作金蝶单据：查询、新建、提交、审核、下推等。
+
+**第二层：数据库理解层**（mcp-sqlserver-introspect）
+探查 SQL Server 表结构：找表、找字段、理解关联关系。
+
+**典型使用场景**：
+
+```
+# 场景一：接口映射
+问："帮我找采购订单相关的表"
+→ mcp-sqlserver-introspect 返回 T_PUR_PurchaseOrder 等表
+→ 确认 Kingdee API 字段和数据库字段的对应关系
+
+# 场景二：字段溯源
+问："帮我查 FTotalAmount 这个字段在哪些表里"
+→ mcp-sqlserver-introspect 返回包含该字段的表列表
+
+# 场景三：数据核查
+先用 mcp-sqlserver-introspect 探索表结构
+再用 kingdee-mcp 操作 ERP 数据
+两者配合，AI 既能理解数据库，又能操作 ERP
+```
+
+**mcp-sqlserver-introspect** 项目地址：https://gitee.com/lzhrick123/mcp-sqlserver-introspect1
+
+> kingdee-mcp 已内置 SQL Server 探查工具（配置 `MCP_SQLSERVER_*` 环境变量即可使用），无需额外安装 mcp-sqlserver-introspect。
+
 **Q: 如何添加自定义工具？**
 基于 FastMCP 框架，在 `server.py` 中添加 `@mcp.tool()` 装饰器方法即可扩展。
 

@@ -114,7 +114,8 @@ async def _login() -> str:
     """登录金蝶，返回 SessionId，失败抛异常"""
     global _session_id
     payload = {"parameters": [ACCT_ID, USERNAME, APP_ID, APP_SEC, LCID]}
-    async with httpx.AsyncClient(timeout=30, proxy=None) as client:
+    async with httpx.AsyncClient(timeout=30, proxy=None,
+                                  transport=httpx.AsyncHTTPTransport(http1=True)) as client:
         resp = await client.post(
             _url("login"),
             json=payload,
@@ -149,7 +150,8 @@ async def _post(ep_key: str, payload: Any) -> Any:
             },
         )
 
-    async with httpx.AsyncClient(timeout=30, proxy=None) as client:
+    async with httpx.AsyncClient(timeout=30, proxy=None,
+                                  transport=httpx.AsyncHTTPTransport(http1=True)) as client:
         # 没有 session 先登录
         if not _session_id:
             await _login()

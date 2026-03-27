@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2563eb"/>
+      <stop offset="100%" style="stop-color:#1d4ed8"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="400" rx="60" fill="url(#bg)"/>
+  <text x="200" y="160" font-family="Arial, sans-serif" font-size="72" font-weight="bold" fill="white" text-anchor="middle">金</text>
+  <text x="200" y="240" font-family="Arial, sans-serif" font-size="36" fill="white" text-anchor="middle" opacity="0.9">Kingdee</text>
+  <text x="200" y="280" font-family="Arial, sans-serif" font-size="28" fill="white" text-anchor="middle" opacity="0.8">MCP</text>
+  <rect x="120" y="300" width="160" height="4" rx="2" fill="white" opacity="0.6"/>
+</svg>

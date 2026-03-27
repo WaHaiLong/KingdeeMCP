@@ -27,6 +27,7 @@ dependencies = [
     "mcp[cli]>=1.0.0",
     "httpx>=0.27.0",
     "pydantic>=2.0.0",
+    "pyodbc>=5.0.0",
 ]
 
 [project.urls]
@@ -39,3 +40,7 @@ kingdee-mcp = "kingdee_mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kingdee_mcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -2,6 +2,7 @@
 金蝶云星空 MCP Server
 支持模块：供应链（采购/销售）、库存（出入库/即时库存）、基础资料（物料/客户/供应商）
 认证方式：私有云 WebAPI + LoginByAppSecret 登录拿 SessionId，后续请求带 Cookie
+SQL Server 探查：系统目录只读查询，辅助理解数据库结构（可选功能）
 """
 
 import json
@@ -25,6 +26,18 @@ ACCT_ID    = os.getenv("KINGDEE_ACCT_ID", "")
 USERNAME   = os.getenv("KINGDEE_USERNAME", "")
 APP_ID     = os.getenv("KINGDEE_APP_ID", "")
 APP_SEC    = os.getenv("KINGDEE_APP_SEC", "")
+LCID       = int(os.getenv("KINGDEE_LCID", "2052"))
+
+# ─────────────────────────────────────────────
+# SQL Server 探查配置（可选，从环境变量读取）
+# ─────────────────────────────────────────────
+_SQL_HOST     = os.getenv("MCP_SQLSERVER_HOST", "")
+_SQL_PORT     = os.getenv("MCP_SQLSERVER_PORT", "1433")
+_SQL_USER     = os.getenv("MCP_SQLSERVER_USER", "")
+_SQL_PASSWORD = os.getenv("MCP_SQLSERVER_PASSWORD", "")
+_SQL_DATABASE = os.getenv("MCP_SQLSERVER_DATABASE", "")
+_SQL_SCHEMA   = os.getenv("MCP_SQLSERVER_SCHEMA", "dbo")
+_SQL_ENABLED  = bool(_SQL_HOST and _SQL_USER and _SQL_PASSWORD)
 
 # WebAPI 端点路径
 _EP = {
@@ -100,8 +113,9 @@ def _url(ep_key: str) -> str:
 async def _login() -> str:
     """登录金蝶，返回 SessionId，失败抛异常"""
     global _session_id
-    payload = {"parameters": [ACCT_ID, USERNAME, APP_ID, APP_SEC, 2052]}
-    async with httpx.AsyncClient(timeout=30, proxy=None) as client:
+    payload = {"parameters": [ACCT_ID, USERNAME, APP_ID, APP_SEC, LCID]}
+    async with httpx.AsyncClient(timeout=30, proxy=None,
+                                  transport=httpx.AsyncHTTPTransport(http1=True)) as client:
         resp = await client.post(
             _url("login"),
             json=payload,
@@ -116,11 +130,11 @@ async def _login() -> str:
 
 
 async def _post(ep_key: str, payload: Any) -> Any:
-    """带自动重新登录的 API 调用"""
+    """带自动重新登录的 API 调用（用于 Query 等只读操作）"""
     global _session_id
 
-    # 构建金蝶 WebAPI 请求数据
-    # payload 格式: [FormId, {参数对象}]
+    # Query 的 payload 已是 dict（由 _query_payload 返回）
+    # 其他操作的 payload 是 list：[formId, {params}]，需要合并
     if isinstance(payload, list) and len(payload) == 2:
         form_id, params = payload
         request_data = {"FormId": form_id, **params}
@@ -128,15 +142,17 @@ async def _post(ep_key: str, payload: Any) -> Any:
         request_data = payload
 
     async def _do_post(session: str) -> httpx.Response:
+        # 所有 API 都用 form-urlencoded + JSON string 格式
         return await client.post(
             _url(ep_key),
-            data={"data": json.dumps(request_data)},
+            data={"data": json.dumps(request_data, ensure_ascii=False)},
             headers={
                 "Cookie": f"kdservice-sessionid={session}",
             },
         )
 
-    async with httpx.AsyncClient(timeout=30, proxy=None) as client:
+    async with httpx.AsyncClient(timeout=30, proxy=None,
+                                  transport=httpx.AsyncHTTPTransport(http1=True)) as client:
         # 没有 session 先登录
         if not _session_id:
             await _login()
@@ -144,6 +160,65 @@ async def _post(ep_key: str, payload: Any) -> Any:
         resp = await _do_post(_session_id)
 
         # session 过期则重新登录重试一次
+        if resp.status_code == 401 or (
+            resp.status_code == 200 and
+            "会话" in resp.text or "session" in resp.text.lower()
+        ):
+            await _login()
+            resp = await _do_post(_session_id)
+
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def _post_raw(ep_key: str, form_id: str, model: dict,
+                     need_update_fields: Optional[List[str]] = None,
+                     need_return_fields: Optional[List[str]] = None,
+                     is_delete_entry: bool = True) -> Any:
+    """带自动重新登录的 raw JSON 调用（用于 Save/View/Submit/Audit/Push 等写操作）
+
+    Kingdee WebAPI 写接口使用小写 formid + 嵌套 data 对象格式。
+    - Save/View/Submit/Audit/Delete: data={"Model": {...}, NeedUpDateFields:[], ...}
+    - Push: data={"TargetFormId":"...","Numbers":[...],"RuleId":"..."}  （无 Model 包装）
+    """
+    global _session_id
+
+    if ep_key == "push":
+        # Push: data 直接放字段，不需要 Model 包装
+        data_obj: dict[str, Any] = dict(model)
+    else:
+        # Save/View/Submit/Audit/Delete: Model 是必须的
+        data_obj = {"Model": model}
+        if need_update_fields:
+            data_obj["NeedUpDateFields"] = need_update_fields
+        if need_return_fields:
+            data_obj["NeedReturnFields"] = need_return_fields
+        if ep_key == "save":
+            data_obj["IsDeleteEntry"] = "true" if is_delete_entry else "false"
+            data_obj["IsVerifyBaseDataField"] = "false"
+            data_obj["IsAutoSubmitAndAudit"] = "false"
+            data_obj["ValidateRepeatJson"] = "false"
+
+    payload = {"formid": form_id, "data": data_obj}
+
+    async def _do_post(session: str) -> httpx.Response:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        return await client.post(
+            _url(ep_key),
+            content=body,
+            headers={
+                "Cookie": f"kdservice-sessionid={session}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+        )
+
+    async with httpx.AsyncClient(timeout=30, proxy=None,
+                                  transport=httpx.AsyncHTTPTransport(http1=True)) as client:
+        if not _session_id:
+            await _login()
+
+        resp = await _do_post(_session_id)
+
         if resp.status_code == 401 or (
             resp.status_code == 200 and
             "会话" in resp.text or "session" in resp.text.lower()
@@ -183,15 +258,364 @@ def _fmt(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
+# ─────────────────────────────────────────────
+# SQL Server 探查工具（可选功能）
+# ─────────────────────────────────────────────
+
+def _sql_connect():
+    """建立 SQL Server 连接"""
+    try:
+        import pyodbc
+    except ImportError:
+        raise RuntimeError(
+            "pyodbc 未安装，请运行：pip install pyodbc\n"
+            "SQL Server 探查功能需要 pyodbc 驱动。"
+        )
+    if not _SQL_ENABLED:
+        raise RuntimeError(
+            "SQL Server 未配置。请设置以下环境变量：\n"
+            "MCP_SQLSERVER_HOST / MCP_SQLSERVER_USER / MCP_SQLSERVER_PASSWORD / MCP_SQLSERVER_DATABASE"
+        )
+    driver = os.getenv("MCP_SQLSERVER_DRIVER", "ODBC Driver 17 for SQL Server")
+    conn_str = (
+        f"DRIVER={{{driver}}};"
+        f"SERVER={_SQL_HOST},{_SQL_PORT};"
+        f"DATABASE={_SQL_DATABASE};"
+        f"UID={_SQL_USER};PWD={_SQL_PASSWORD};"
+        "TrustServerCertificate=yes;"
+    )
+    return pyodbc.connect(conn_str, timeout=10)
+
+
+def _sql_rows(conn, query: str) -> List[dict]:
+    """执行只读查询，返回行列表（字典格式）"""
+    cursor = conn.cursor()
+    cursor.execute(query)
+    columns = [col[0] for col in cursor.description]
+    rows = []
+    for row in cursor.fetchall():
+        rows.append(dict(zip(columns, row)))
+    cursor.close()
+    return rows
+
+
+# ─────────────────────────────────────────────
+# SQL Server 探查工具模型
+# ─────────────────────────────────────────────
+
+class SqlSearchInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    pattern: str = Field(default="", description="搜索关键字（表名/列名），支持模糊匹配，如 'purchase'、'supplier'")
+    limit: int = Field(default=20, ge=1, le=200, description="最大返回条数")
+
+
+class SqlDescribeInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    table_name: str = Field(..., description="表名（不含 Schema 前缀），如 't_PUR_PurchaseOrder'")
+
+
+class MetadataCandidateInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(default="", description="金蝶 form_id，如 'PUR_PurchaseOrder'、'BD_Material'，留空则返回所有候选映射")
+    limit: int = Field(default=20, ge=1, le=200, description="最大返回条数")
+
+
+@mcp.tool(
+    name="kingdee_discover_tables",
+    annotations={"title": "搜索数据库表", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": True}
+)
+async def kingdee_discover_tables(params: SqlSearchInput) -> str:
+    """搜索 SQL Server 中包含关键字的表名（仅查系统目录，不读业务数据）。
+
+    适用场景：
+    - 想知道"采购"相关的表有哪些
+    - 快速定位业务表名，不记得确切名称时
+    - 配合 kingdee_discover_columns 一起使用，先找表再看字段
+
+    搜索范围：SQL Server 系统目录（information_schema.TABLES / sys.tables）
+
+    Returns:
+        str: 表名列表，含表名、类型、创建时间
+    """
+    if not params.pattern:
+        return _fmt({
+            "tip": "请提供搜索关键字，如 pattern='purchase' 或 pattern='供应商'"
+        })
+
+    try:
+        conn = _sql_connect()
+        try:
+            rows = _sql_rows(conn, f"""
+                SELECT TABLE_NAME, TABLE_TYPE
+                FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_SCHEMA = '{_SQL_SCHEMA}'
+                  AND TABLE_TYPE = 'BASE TABLE'
+                  AND (TABLE_NAME LIKE '%{params.pattern}%'
+                       OR TABLE_NAME LIKE '%{params.pattern.upper()}%')
+                ORDER BY TABLE_NAME
+                OFFSET 0 ROWS FETCH NEXT {params.limit} ROWS ONLY
+            """)
+            return _fmt({
+                "pattern": params.pattern,
+                "schema": _SQL_SCHEMA,
+                "database": _SQL_DATABASE,
+                "count": len(rows),
+                "tables": rows
+            })
+        finally:
+            conn.close()
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_discover_columns",
+    annotations={"title": "搜索数据库字段", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": True}
+)
+async def kingdee_discover_columns(params: SqlSearchInput) -> str:
+    """按关键字搜索 SQL Server 中的列名（仅查系统目录，不读业务数据）。
+
+    适用场景：
+    - 想找一个"供应商编码"字段在哪些表里
+    - 接口映射时，确认某个字段在数据库里的实际名称
+    - 快速验证 Kingdee API 字段和数据库字段的对应关系
+
+    Returns:
+        str: 列名搜索结果，含表名、列名、数据类型、是否可空
+    """
+    if not params.pattern:
+        return _fmt({
+            "tip": "请提供搜索关键字，如 pattern='supplier' 或 pattern='金额'"
+        })
+
+    try:
+        conn = _sql_connect()
+        try:
+            rows = _sql_rows(conn, f"""
+                SELECT
+                    c.TABLE_NAME,
+                    c.COLUMN_NAME,
+                    c.DATA_TYPE,
+                    c.CHARACTER_MAXIMUM_LENGTH,
+                    c.IS_NULLABLE,
+                    c.COLUMN_DEFAULT,
+                    c.ORDINAL_POSITION
+                FROM INFORMATION_SCHEMA.COLUMNS c
+                JOIN INFORMATION_SCHEMA.TABLES t
+                  ON c.TABLE_SCHEMA = t.TABLE_SCHEMA
+                 AND c.TABLE_NAME = t.TABLE_NAME
+                 AND t.TABLE_TYPE = 'BASE TABLE'
+                WHERE c.TABLE_SCHEMA = '{_SQL_SCHEMA}'
+                  AND (c.COLUMN_NAME LIKE '%{params.pattern}%'
+                       OR c.COLUMN_NAME LIKE '%{params.pattern.upper()}%')
+                ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION
+                OFFSET 0 ROWS FETCH NEXT {params.limit} ROWS ONLY
+            """)
+            return _fmt({
+                "pattern": params.pattern,
+                "schema": _SQL_SCHEMA,
+                "database": _SQL_DATABASE,
+                "count": len(rows),
+                "columns": rows
+            })
+        finally:
+            conn.close()
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_describe_table",
+    annotations={"title": "查看表结构", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": True}
+)
+async def kingdee_describe_table(params: SqlDescribeInput) -> str:
+    """查看指定表的完整结构（列名、类型、可空、默认值）。
+
+    适用场景：
+    - 知道表名，想了解完整字段列表
+    - 写 SQL 或做数据建模前，查看表结构
+    - 确认 Kingdee API 返回的字段在数据库里的实际类型
+
+    已知金蝶常用表名前缀：
+    - t_PUR_：采购相关（t_PUR_PurchaseOrder 采购订单）
+    - t_SAL_：销售相关（t_SAL_SaleOrder 销售订单）
+    - t_STK_：库存相关（t_STK_InStock 入库单）
+    - t_BD_：基础资料（t_BD_Material 物料、t_BD_Supplier 供应商）
+
+    Returns:
+        str: 表结构详情
+    """
+    try:
+        conn = _sql_connect()
+        try:
+            rows = _sql_rows(conn, f"""
+                SELECT
+                    c.COLUMN_NAME,
+                    c.DATA_TYPE,
+                    c.CHARACTER_MAXIMUM_LENGTH,
+                    c.NUMERIC_PRECISION,
+                    c.NUMERIC_SCALE,
+                    c.IS_NULLABLE,
+                    c.COLUMN_DEFAULT,
+                    c.ORDINAL_POSITION,
+                    pk.COLUMN_NAME AS IS_PRIMARY_KEY,
+                    fk.REFERENCED_TABLE_NAME,
+                    fk.REFERENCED_COLUMN_NAME
+                FROM INFORMATION_SCHEMA.COLUMNS c
+                LEFT JOIN (
+                    SELECT cu.TABLE_SCHEMA, cu.TABLE_NAME, cu.COLUMN_NAME
+                    FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+                    JOIN INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE cu
+                      ON tc.CONSTRAINT_NAME = cu.CONSTRAINT_NAME
+                    WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+                      AND cu.TABLE_SCHEMA = '{_SQL_SCHEMA}'
+                ) pk ON pk.TABLE_SCHEMA = c.TABLE_SCHEMA
+                   AND pk.TABLE_NAME = c.TABLE_NAME
+                   AND pk.COLUMN_NAME = c.COLUMN_NAME
+                LEFT JOIN (
+                    SELECT
+                        kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.COLUMN_NAME,
+                        kcu2.TABLE_NAME AS REFERENCED_TABLE_NAME,
+                        kcu2.COLUMN_NAME AS REFERENCED_COLUMN_NAME
+                    FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
+                    JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+                      ON rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+                    JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu2
+                      ON rc.UNIQUE_CONSTRAINT_NAME = kcu2.CONSTRAINT_NAME
+                    WHERE kcu.TABLE_SCHEMA = '{_SQL_SCHEMA}'
+                ) fk ON fk.TABLE_SCHEMA = c.TABLE_SCHEMA
+                   AND fk.TABLE_NAME = c.TABLE_NAME
+                   AND fk.COLUMN_NAME = c.COLUMN_NAME
+                WHERE c.TABLE_SCHEMA = '{_SQL_SCHEMA}'
+                  AND c.TABLE_NAME = '{params.table_name}'
+                ORDER BY c.ORDINAL_POSITION
+            """)
+            if not rows:
+                return _fmt({"error": f"表 '{params.table_name}' 不存在或无权访问。"})
+
+            return _fmt({
+                "table": params.table_name,
+                "schema": _SQL_SCHEMA,
+                "database": _SQL_DATABASE,
+                "count": len(rows),
+                "columns": rows
+            })
+        finally:
+            conn.close()
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_discover_metadata_candidates",
+    annotations={"title": "金蝶元数据候选发现", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": True}
+)
+async def kingdee_discover_metadata_candidates(params: MetadataCandidateInput) -> str:
+    """发现金蝶数据库中与指定 form_id 或 form_id 前缀对应的表。
+
+    这是面向金蝶/K3 场景的辅助工具：根据 form_id 推测对应的数据库表名。
+
+    form_id → 表名对应规律：
+    - PUR_PurchaseOrder  → t_PUR_PurchaseOrder（采购订单）
+    - SAL_SaleOrder     → t_SAL_SaleOrder（销售订单）
+    - STK_InStock       → t_STK_InStock（入库单）
+    - BD_Material       → t_BD_Material（物料）
+    - BD_Supplier       → t_BD_Supplier（供应商）
+    - BD_Customer       → t_BD_Customer（客户）
+
+    适用场景：
+    - 想知道某个 form_id 对应数据库里哪张表
+    - 想探索某类单据的所有关联表（如采购全流程：订单→收料→入库）
+    - 理解金蝶 form_id 和数据库表名的映射关系
+
+    Returns:
+        str: form_id 与表名的候选映射列表
+    """
+    # 常见 form_id → 表名前缀映射
+    # 常见 form_id → 表名映射（注意：表名前缀因金蝶版本不同可能为 T_ 或 t_，请以实际数据库为准）
+    CANDIDATE_PATTERNS = [
+        # 基础资料
+        ("BD_Material",    "T_BD_MATERIAL",    "物料"),
+        ("BD_Supplier",    "T_BD_SUPPLIER",    "供应商"),
+        ("BD_Customer",    "T_BD_CUSTOMER",    "客户"),
+        ("BD_Department",  "T_BD_DEPARTMENT",   "部门"),
+        ("BD_Empinfo",     "T_BD_EMPINFO",     "员工"),
+        ("BD_Stock",       "T_BD_STOCK",       "仓库"),
+        # 采购
+        ("PUR_PurchaseOrder", "T_PUR_PURCHASEORDER", "采购订单"),
+        # 销售
+        ("SAL_SaleOrder",  "T_SAL_SALEORDER",  "销售订单"),
+        # 库存
+        ("STK_InStock",   "T_STK_INSTOCK",   "入库单"),
+        # 应收应付
+        ("AP_Payable",     "T_AP_PAYABLE",    "应付单"),
+        ("AR_Receivable",  "T_AR_RECEIVABLE", "应收单"),
+        # 生产
+        ("PRD_MO",         "T_PRD_MO",        "生产订单"),
+    ]
+
+    try:
+        conn = _sql_connect()
+        try:
+            # 按 form_id 过滤（如指定了）
+            if params.form_id:
+                candidates = [
+                    (fid, tbl, name) for fid, tbl, name in CANDIDATE_PATTERNS
+                    if params.form_id.lower() in fid.lower()
+                ]
+            else:
+                candidates = CANDIDATE_PATTERNS
+
+            candidates = candidates[:params.limit]
+
+            # 检查哪些表真实存在
+            results = []
+            for form_id, table_name, description in candidates:
+                rows = _sql_rows(conn, f"""
+                    SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
+                    WHERE TABLE_SCHEMA = '{_SQL_SCHEMA}'
+                      AND TABLE_NAME = '{table_name}'
+                      AND TABLE_TYPE = 'BASE TABLE'
+                """)
+                results.append({
+                    "form_id": form_id,
+                    "table_name": table_name,
+                    "description": description,
+                    "exists": len(rows) > 0,
+                    "suggestion": (
+                        f"调用 kingdee_describe_table(table_name='{table_name}') 查看表结构"
+                        if rows else f"表 '{table_name}' 不存在，可能使用不同命名规则"
+                    )
+                })
+
+            return _fmt({
+                "form_id_filter": params.form_id or "(全部)",
+                "schema": _SQL_SCHEMA,
+                "database": _SQL_DATABASE,
+                "count": len(results),
+                "results": results
+            })
+        finally:
+            conn.close()
+    except Exception as e:
+        return _err(e)
+
+
 def _query_payload(form_id: str, field_keys: str, filter_string: str,
-                   order_string: str, start_row: int, limit: int) -> list:
-    return [form_id, {
+                   order_string: str, start_row: int, limit: int) -> dict:
+    """Query API 请求数据（dict 格式，_post 会直接作为 JSON body 发送）"""
+    return {
+        "FormId": form_id,
         "FieldKeys": field_keys,
         "FilterString": filter_string,
         "OrderString": order_string,
         "StartRow": start_row,
         "Limit": limit,
-    }]
+    }
 
 
 # ─────────────────────────────────────────────
@@ -306,7 +730,8 @@ async def kingdee_view_bill(params: ViewInput) -> str:
         str: JSON 格式的完整单据数据
     """
     try:
-        result = await _post("view", [params.form_id, {"Id": params.bill_id}])
+        # View 使用 _post_raw（raw JSON body + 小写 formid）
+        result = await _post_raw("view", params.form_id, {"Id": params.bill_id})
         return _fmt(result)
     except Exception as e:
         return _err(e)
@@ -509,16 +934,31 @@ async def kingdee_save_bill(params: SaveInput) -> str:
         str: JSON，含新建单据的 FID 和单据编号 FBillNo
     """
     try:
-        payload = [params.form_id, {
-            "NeedUpDateFields": params.need_update_fields,
-            "NeedReturnFields": ["FID", "FBillNo"],
-            "IsDeleteEntry": params.is_delete_entry,
-            "IsVerifyBaseDataField": False,
-            "IsAutoSubmitAndAudit": False,
-            "Model": params.model,
-        }]
-        result = await _post("save", payload)
-        return _fmt(result)
+        # 构建 Kingdee Save API 格式：
+        # data 内部 Model（单据字段）和 NeedUpDateFields 等是同级兄弟节点
+        model = dict(params.model)
+        # 新建时 FID 设为 0，修改时保留原 FID
+        model.setdefault("FID", 0)
+
+        result = await _post_raw(
+            "save",
+            params.form_id,
+            model,
+            need_update_fields=params.need_update_fields,
+            need_return_fields=["FID", "FBillNo"],
+            is_delete_entry=params.is_delete_entry,
+        )
+
+        # 提取新建单据的 FID 和 FBillNo
+        rs = result.get("Result", {})
+        status = rs.get("ResponseStatus", {})
+        if status.get("IsSuccess"):
+            fid = rs.get("Id") or (status.get("SuccessEntitys", [{}])[0] or {}).get("Id")
+            bill_no = rs.get("Number") or (status.get("SuccessEntitys", [{}])[0] or {}).get("Number")
+            return _fmt({
+                "Result": {"FID": fid, "FBillNo": bill_no, "ResponseStatus": status}
+            })
+        return _fmt({"Result": {"ResponseStatus": status}})
     except Exception as e:
         return _err(e)
 
@@ -535,7 +975,8 @@ async def kingdee_submit_bills(params: BillIdsInput) -> str:
         str: 提交结果
     """
     try:
-        result = await _post("submit", [params.form_id, {"Ids": ",".join(params.bill_ids)}])
+        # Submit 使用 _post_raw（小写 formid + raw JSON body）
+        result = await _post_raw("submit", params.form_id, {"Ids": params.bill_ids})
         return _fmt(result)
     except Exception as e:
         return _err(e)
@@ -553,7 +994,7 @@ async def kingdee_audit_bills(params: BillIdsInput) -> str:
         str: 审核结果
     """
     try:
-        result = await _post("audit", [params.form_id, {"Ids": ",".join(params.bill_ids)}])
+        result = await _post_raw("audit", params.form_id, {"Ids": params.bill_ids})
         return _fmt(result)
     except Exception as e:
         return _err(e)
@@ -571,7 +1012,7 @@ async def kingdee_unaudit_bills(params: BillIdsInput) -> str:
         str: 反审核结果
     """
     try:
-        result = await _post("unaudit", [params.form_id, {"Ids": ",".join(params.bill_ids)}])
+        result = await _post_raw("unaudit", params.form_id, {"Ids": params.bill_ids})
         return _fmt(result)
     except Exception as e:
         return _err(e)
@@ -589,7 +1030,7 @@ async def kingdee_delete_bills(params: BillIdsInput) -> str:
         str: 删除结果
     """
     try:
-        result = await _post("delete", [params.form_id, {"Ids": ",".join(params.bill_ids)}])
+        result = await _post_raw("delete", params.form_id, {"Ids": params.bill_ids})
         return _fmt(result)
     except Exception as e:
         return _err(e)
@@ -599,8 +1040,11 @@ class PushDownInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     form_id: str = Field(..., description="源单据类型，如 SAL_SaleOrder、PUR_PurchaseOrder")
     target_form_id: str = Field(..., description="目标单据类型，如 SAL_OUTSTOCK、STK_InStock")
-    source_ids: List[str] = Field(..., description="源单据内码 FID 列表", min_length=1)
-    rule_ids: List[str] = Field(default_factory=list, description="转换规则 ID 列表，留空使用默认规则")
+    source_bill_nos: List[str] = Field(
+        ..., description="源单据编号列表（FBillNo），如 CGDD000025", min_length=1,
+        alias="source_bill_nos"
+    )
+    rule_id: str = Field(default="", description="转换规则 ID（RuleId），如 PUR_PurchaseOrder-PUR_ReceiveBill")
 
 
 @mcp.tool(
@@ -621,12 +1065,13 @@ async def kingdee_push_bill(params: PushDownInput) -> str:
         str: JSON，含下推生成的目标单据 FID 和单据编号
     """
     try:
-        payload = [params.form_id, {
+        push_data: dict[str, Any] = {
             "TargetFormId": params.target_form_id,
-            "SourceIds":    ",".join(params.source_ids),
-            "RuleIds":      ",".join(params.rule_ids) if params.rule_ids else "",
-        }]
-        result = await _post("push", payload)
+            "Numbers": params.source_bill_nos,
+        }
+        if params.rule_id:
+            push_data["RuleId"] = params.rule_id
+        result = await _post_raw("push", params.form_id, push_data)
         return _fmt(result)
     except Exception as e:
         return _err(e)
@@ -928,7 +1373,7 @@ async def kingdee_query_expense_reimburse(params: QueryInput) -> str:
         return _fmt({
             "form_id": form_id,
             "form_name": "费用报销单",
-            "start_row": params.offset,
+            "start_row": params.start_row,
             "count": len(rows),
             "has_more": len(rows) >= params.limit,
             "data": rows

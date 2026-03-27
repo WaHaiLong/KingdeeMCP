@@ -4,7 +4,6 @@
 [![Downloads](https://img.shields.io/pypi/dm/kingdee-mcp?style=flat-square&color=10b981)](https://pypi.org/project/kingdee-mcp/)
 [![Python versions](https://img.shields.io/pypi/pyversions/kingdee-mcp?style=flat-square)](https://pypi.org/project/kingdee-mcp/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![MCP Badge](https://lobehub.com/badge/mcp/wahailong-kingdeemcp)](https://lobehub.com/mcp/wahailong-kingdeemcp)
 [![MCP Badge](https://lobehub.com/badge/mcp-full/wahailong-kingdeemcp?theme=light)](https://lobehub.com/mcp/wahailong-kingdeemcp)
 
 **Kingdee MCP Server** 是金蝶云星空（Kingdee Cloud Star）ERP 的 [MCP（Model Context Protocol）](https://modelcontextprotocol.io/) 服务端，让 Claude、Cursor、Windsurf、Cline 等 AI 助手能够通过自然语言直接操作金蝶 ERP 系统。
@@ -54,13 +53,15 @@ AI 会自动调用金蝶 API 完成操作，无需手动登录 ERP 界面。
 
 ## 功能特性
 
-- **13+ 实用工具**：涵盖采购、销售、库存、基础资料等核心业务
+- **20 个 ERP 操作工具**：涵盖采购、销售、库存、基础资料等核心业务
+- **4 个 SQL Server 探查工具**：搜索表、搜索字段、查看表结构、金蝶元数据候选发现
 - **自然语言操作**：用中文直接描述需求，AI 自动转换为 API 调用
 - **异步高性能**：基于 async/await，支持并发请求
 - **自动重试**：Session 过期自动重登，连接失败自动重试
-- **安全认证**：采用金蝶官方 WebAPI 认证，支持 AppSecret 方式
+- **安全认证**：采用金蝶官方 WebAPI 认证，支持 AppSecret 方式，兼容公有云和私有云
 - **类型安全**：基于 Pydantic 数据验证，参数自动补全
 - **易于扩展**：基于 FastMCP 框架，轻松添加自定义工具
+- **使用示例**：提供 [9 个常见业务场景示例](./examples/)，覆盖查询、新建、审核、下推等操作
 
 ## 快速安装
 
@@ -125,11 +126,16 @@ uvx kingdee-mcp
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
-| `KINGDEE_SERVER_URL` | 金蝶私有云服务器地址（需包含 /k3cloud/） | `http://192.168.1.100/k3cloud/` |
+| `KINGDEE_SERVER_URL` | 金蝶服务器地址（需包含 /k3cloud/） | `http://192.168.1.100/k3cloud/` |
 | `KINGDEE_ACCT_ID` | 账套ID | `69ae8ed35dab20` |
 | `KINGDEE_USERNAME` | 集成用户名 | `API集成` |
 | `KINGDEE_APP_ID` | 应用ID | `338898_xxxxx` |
 | `KINGDEE_APP_SEC` | 应用密钥（AppSecret） | `f8b75d4ccxxxx` |
+| `MCP_SQLSERVER_HOST` | SQL Server 主机（可选，用于数据库探查） | `localhost` |
+| `MCP_SQLSERVER_PORT` | SQL Server 端口（默认 1433） | `1433` |
+| `MCP_SQLSERVER_DATABASE` | 数据库名 | `AIS20260309171043` |
+| `MCP_SQLSERVER_USER` | SQL Server 用户（建议只读账号） | `sa` |
+| `MCP_SQLSERVER_PASSWORD` | SQL Server 密码 | `xxxx` |
 
 ## 可用工具列表
 
@@ -180,6 +186,19 @@ uvx kingdee-mcp
 反审核销售订单 SO2024001
 ```
 
+## SQL Server 探查工具（可选）
+
+配置 `MCP_SQLSERVER_*` 环境变量后可用，帮助理解金蝶数据库结构：
+
+| 工具名称 | 功能说明 |
+|---------|---------|
+| `kingdee_discover_tables` | 按关键字搜索数据库表名 |
+| `kingdee_discover_columns` | 按关键字搜索字段名（含所在表） |
+| `kingdee_describe_table` | 查看表完整结构（字段、类型、主键、外键） |
+| `kingdee_discover_metadata_candidates` | 根据 form_id 发现对应的数据库表名 |
+
+**典型用法**：先问 AI "采购订单在数据库里对应哪张表"，再用 `kingdee_describe_table` 看字段结构。
+
 ## 支持的单据类型（form_id）
 
 | form_id | 说明 |
@@ -205,7 +224,39 @@ uvx kingdee-mcp
 检查 `KINGDEE_SERVER_URL` 是否正确（需包含 `/k3cloud/` 后缀），确保服务器可访问。
 
 **Q: 支持金蝶云星空公有云吗？**
-目前主要针对私有云测试，公有云用户可能需要调整认证方式。
+支持。公有云和私有云使用相同的 AppSecret 认证方式，配置方式完全一致。
+
+## 配合 mcp-sqlserver-introspect 使用
+
+kingdee-mcp 提供两层能力：
+
+**第一层：ERP 操作层**（kingdee-mcp 内置）
+直接操作金蝶单据：查询、新建、提交、审核、下推等。
+
+**第二层：数据库理解层**（mcp-sqlserver-introspect）
+探查 SQL Server 表结构：找表、找字段、理解关联关系。
+
+**典型使用场景**：
+
+```
+# 场景一：接口映射
+问："帮我找采购订单相关的表"
+→ mcp-sqlserver-introspect 返回 T_PUR_PurchaseOrder 等表
+→ 确认 Kingdee API 字段和数据库字段的对应关系
+
+# 场景二：字段溯源
+问："帮我查 FTotalAmount 这个字段在哪些表里"
+→ mcp-sqlserver-introspect 返回包含该字段的表列表
+
+# 场景三：数据核查
+先用 mcp-sqlserver-introspect 探索表结构
+再用 kingdee-mcp 操作 ERP 数据
+两者配合，AI 既能理解数据库，又能操作 ERP
+```
+
+**mcp-sqlserver-introspect** 项目地址：https://gitee.com/lzhrick123/mcp-sqlserver-introspect1
+
+> kingdee-mcp 已内置 SQL Server 探查工具（配置 `MCP_SQLSERVER_*` 环境变量即可使用），无需额外安装 mcp-sqlserver-introspect。
 
 **Q: 如何添加自定义工具？**
 基于 FastMCP 框架，在 `server.py` 中添加 `@mcp.tool()` 装饰器方法即可扩展。

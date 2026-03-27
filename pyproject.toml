@@ -39,3 +39,7 @@ kingdee-mcp = "kingdee_mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kingdee_mcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

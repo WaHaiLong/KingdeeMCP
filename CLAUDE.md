@@ -24,7 +24,14 @@ pip install "mcp[cli]>=1.0.0" httpx pydantic
 
 Run tests:
 ```bash
+# Unit + mock tests (no Kingdee server required)
 python -m pytest tests/ -v
+
+# Integration tests (requires Kingdee server + env vars)
+KINGDEE_SERVER_URL=http://your-server/k3cloud/ \
+KINGDEE_ACCT_ID=... KINGDEE_USERNAME=... \
+KINGDEE_APP_ID=... KINGDEE_APP_SEC=... \
+python -m pytest tests/test_integration.py -v
 ```
 
 ## Architecture

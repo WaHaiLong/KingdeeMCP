@@ -130,11 +130,11 @@ async def _login() -> str:
 
 
 async def _post(ep_key: str, payload: Any) -> Any:
-    """带自动重新登录的 API 调用"""
+    """带自动重新登录的 API 调用（用于 Query 等只读操作）"""
     global _session_id
 
-    # 构建金蝶 WebAPI 请求数据
-    # payload 格式: [FormId, {参数对象}]
+    # Query 的 payload 已是 dict（由 _query_payload 返回）
+    # 其他操作的 payload 是 list：[formId, {params}]，需要合并
     if isinstance(payload, list) and len(payload) == 2:
         form_id, params = payload
         request_data = {"FormId": form_id, **params}
@@ -142,9 +142,10 @@ async def _post(ep_key: str, payload: Any) -> Any:
         request_data = payload
 
     async def _do_post(session: str) -> httpx.Response:
+        # 所有 API 都用 form-urlencoded + JSON string 格式
         return await client.post(
             _url(ep_key),
-            data={"data": json.dumps(request_data)},
+            data={"data": json.dumps(request_data, ensure_ascii=False)},
             headers={
                 "Cookie": f"kdservice-sessionid={session}",
             },
@@ -159,6 +160,65 @@ async def _post(ep_key: str, payload: Any) -> Any:
         resp = await _do_post(_session_id)
 
         # session 过期则重新登录重试一次
+        if resp.status_code == 401 or (
+            resp.status_code == 200 and
+            "会话" in resp.text or "session" in resp.text.lower()
+        ):
+            await _login()
+            resp = await _do_post(_session_id)
+
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def _post_raw(ep_key: str, form_id: str, model: dict,
+                     need_update_fields: Optional[List[str]] = None,
+                     need_return_fields: Optional[List[str]] = None,
+                     is_delete_entry: bool = True) -> Any:
+    """带自动重新登录的 raw JSON 调用（用于 Save/View/Submit/Audit/Push 等写操作）
+
+    Kingdee WebAPI 写接口使用小写 formid + 嵌套 data 对象格式。
+    - Save/View/Submit/Audit/Delete: data={"Model": {...}, NeedUpDateFields:[], ...}
+    - Push: data={"TargetFormId":"...","Numbers":[...],"RuleId":"..."}  （无 Model 包装）
+    """
+    global _session_id
+
+    if ep_key == "push":
+        # Push: data 直接放字段，不需要 Model 包装
+        data_obj: dict[str, Any] = dict(model)
+    else:
+        # Save/View/Submit/Audit/Delete: Model 是必须的
+        data_obj = {"Model": model}
+        if need_update_fields:
+            data_obj["NeedUpDateFields"] = need_update_fields
+        if need_return_fields:
+            data_obj["NeedReturnFields"] = need_return_fields
+        if ep_key == "save":
+            data_obj["IsDeleteEntry"] = "true" if is_delete_entry else "false"
+            data_obj["IsVerifyBaseDataField"] = "false"
+            data_obj["IsAutoSubmitAndAudit"] = "false"
+            data_obj["ValidateRepeatJson"] = "false"
+
+    payload = {"formid": form_id, "data": data_obj}
+
+    async def _do_post(session: str) -> httpx.Response:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        return await client.post(
+            _url(ep_key),
+            content=body,
+            headers={
+                "Cookie": f"kdservice-sessionid={session}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+        )
+
+    async with httpx.AsyncClient(timeout=30, proxy=None,
+                                  transport=httpx.AsyncHTTPTransport(http1=True)) as client:
+        if not _session_id:
+            await _login()
+
+        resp = await _do_post(_session_id)
+
         if resp.status_code == 401 or (
             resp.status_code == 200 and
             "会话" in resp.text or "session" in resp.text.lower()
@@ -546,14 +606,16 @@ async def kingdee_discover_metadata_candidates(params: MetadataCandidateInput) -
 
 
 def _query_payload(form_id: str, field_keys: str, filter_string: str,
-                   order_string: str, start_row: int, limit: int) -> list:
-    return [form_id, {
+                   order_string: str, start_row: int, limit: int) -> dict:
+    """Query API 请求数据（dict 格式，_post 会直接作为 JSON body 发送）"""
+    return {
+        "FormId": form_id,
         "FieldKeys": field_keys,
         "FilterString": filter_string,
         "OrderString": order_string,
         "StartRow": start_row,
         "Limit": limit,
-    }]
+    }
 
 
 # ─────────────────────────────────────────────
@@ -668,7 +730,8 @@ async def kingdee_view_bill(params: ViewInput) -> str:
         str: JSON 格式的完整单据数据
     """
     try:
-        result = await _post("view", [params.form_id, {"Id": params.bill_id}])
+        # View 使用 _post_raw（raw JSON body + 小写 formid）
+        result = await _post_raw("view", params.form_id, {"Id": params.bill_id})
         return _fmt(result)
     except Exception as e:
         return _err(e)
@@ -871,16 +934,31 @@ async def kingdee_save_bill(params: SaveInput) -> str:
         str: JSON，含新建单据的 FID 和单据编号 FBillNo
     """
     try:
-        payload = [params.form_id, {
-            "NeedUpDateFields": params.need_update_fields,
-            "NeedReturnFields": ["FID", "FBillNo"],
-            "IsDeleteEntry": params.is_delete_entry,
-            "IsVerifyBaseDataField": False,
-            "IsAutoSubmitAndAudit": False,
-            "Model": params.model,
-        }]
-        result = await _post("save", payload)
-        return _fmt(result)
+        # 构建 Kingdee Save API 格式：
+        # data 内部 Model（单据字段）和 NeedUpDateFields 等是同级兄弟节点
+        model = dict(params.model)
+        # 新建时 FID 设为 0，修改时保留原 FID
+        model.setdefault("FID", 0)
+
+        result = await _post_raw(
+            "save",
+            params.form_id,
+            model,
+            need_update_fields=params.need_update_fields,
+            need_return_fields=["FID", "FBillNo"],
+            is_delete_entry=params.is_delete_entry,
+        )
+
+        # 提取新建单据的 FID 和 FBillNo
+        rs = result.get("Result", {})
+        status = rs.get("ResponseStatus", {})
+        if status.get("IsSuccess"):
+            fid = rs.get("Id") or (status.get("SuccessEntitys", [{}])[0] or {}).get("Id")
+            bill_no = rs.get("Number") or (status.get("SuccessEntitys", [{}])[0] or {}).get("Number")
+            return _fmt({
+                "Result": {"FID": fid, "FBillNo": bill_no, "ResponseStatus": status}
+            })
+        return _fmt({"Result": {"ResponseStatus": status}})
     except Exception as e:
         return _err(e)
 
@@ -897,7 +975,8 @@ async def kingdee_submit_bills(params: BillIdsInput) -> str:
         str: 提交结果
     """
     try:
-        result = await _post("submit", [params.form_id, {"Ids": ",".join(params.bill_ids)}])
+        # Submit 使用 _post_raw（小写 formid + raw JSON body）
+        result = await _post_raw("submit", params.form_id, {"Ids": params.bill_ids})
         return _fmt(result)
     except Exception as e:
         return _err(e)
@@ -915,7 +994,7 @@ async def kingdee_audit_bills(params: BillIdsInput) -> str:
         str: 审核结果
     """
     try:
-        result = await _post("audit", [params.form_id, {"Ids": ",".join(params.bill_ids)}])
+        result = await _post_raw("audit", params.form_id, {"Ids": params.bill_ids})
         return _fmt(result)
     except Exception as e:
         return _err(e)
@@ -933,7 +1012,7 @@ async def kingdee_unaudit_bills(params: BillIdsInput) -> str:
         str: 反审核结果
     """
     try:
-        result = await _post("unaudit", [params.form_id, {"Ids": ",".join(params.bill_ids)}])
+        result = await _post_raw("unaudit", params.form_id, {"Ids": params.bill_ids})
         return _fmt(result)
     except Exception as e:
         return _err(e)
@@ -951,7 +1030,7 @@ async def kingdee_delete_bills(params: BillIdsInput) -> str:
         str: 删除结果
     """
     try:
-        result = await _post("delete", [params.form_id, {"Ids": ",".join(params.bill_ids)}])
+        result = await _post_raw("delete", params.form_id, {"Ids": params.bill_ids})
         return _fmt(result)
     except Exception as e:
         return _err(e)
@@ -961,8 +1040,11 @@ class PushDownInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     form_id: str = Field(..., description="源单据类型，如 SAL_SaleOrder、PUR_PurchaseOrder")
     target_form_id: str = Field(..., description="目标单据类型，如 SAL_OUTSTOCK、STK_InStock")
-    source_ids: List[str] = Field(..., description="源单据内码 FID 列表", min_length=1)
-    rule_ids: List[str] = Field(default_factory=list, description="转换规则 ID 列表，留空使用默认规则")
+    source_bill_nos: List[str] = Field(
+        ..., description="源单据编号列表（FBillNo），如 CGDD000025", min_length=1,
+        alias="source_bill_nos"
+    )
+    rule_id: str = Field(default="", description="转换规则 ID（RuleId），如 PUR_PurchaseOrder-PUR_ReceiveBill")
 
 
 @mcp.tool(
@@ -983,12 +1065,13 @@ async def kingdee_push_bill(params: PushDownInput) -> str:
         str: JSON，含下推生成的目标单据 FID 和单据编号
     """
     try:
-        payload = [params.form_id, {
+        push_data: dict[str, Any] = {
             "TargetFormId": params.target_form_id,
-            "SourceIds":    ",".join(params.source_ids),
-            "RuleIds":      ",".join(params.rule_ids) if params.rule_ids else "",
-        }]
-        result = await _post("push", payload)
+            "Numbers": params.source_bill_nos,
+        }
+        if params.rule_id:
+            push_data["RuleId"] = params.rule_id
+        result = await _post_raw("push", params.form_id, push_data)
         return _fmt(result)
     except Exception as e:
         return _err(e)

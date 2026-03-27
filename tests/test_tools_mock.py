@@ -136,23 +136,25 @@ class TestQueryBills:
 class TestViewBill:
     @pytest.mark.asyncio
     async def test_returns_full_bill_details(self):
-        # Kingdee View API returns {"Result": {...}} — FID lives inside Result
+        # Kingdee View API (raw JSON): {"Result": {"ResponseStatus": {...}, "Result": {...bill...}}}
         api_result = {
             "Result": {
-                "FID": "1",
-                "FBillNo": "PO001",
-                "FDate": "2026-03-01",
-                "FSupplierId": {"FName": "华强物资"},
+                "ResponseStatus": {"IsSuccess": True, "Errors": []},
+                "Result": {
+                    "Id": "1",
+                    "FBillNo": "PO001",
+                    "FDate": "2026-03-01",
+                    "SupplierId": {"Number": "VEN001"},
+                },
             }
         }
-        with patch("kingdee_mcp.server._post", new_callable=AsyncMock) as mock_post:
+        with patch("kingdee_mcp.server._post_raw", new_callable=AsyncMock) as mock_post:
             mock_post.return_value = api_result
             result = await kingdee_view_bill(
                 ViewInput(form_id="PUR_PurchaseOrder", bill_id="1")
             )
         parsed = json.loads(result)
-        assert parsed["Result"]["FID"] == "1"
-        assert parsed["Result"]["FBillNo"] == "PO001"
+        assert parsed["Result"]["Result"]["FBillNo"] == "PO001"
 
 
 # ─── kingdee_save_bill ─────────────────────────────────
@@ -160,15 +162,15 @@ class TestViewBill:
 class TestSaveBill:
     @pytest.mark.asyncio
     async def test_create_returns_fid_and_billno(self):
-        # Kingdee Save API returns {"Result": {"FID": ..., "FBillNo": ...}}
+        # Kingdee Save API (raw JSON) 返回 {"Result": {"ResponseStatus": {...}, "Id": ..., "Number": ...}}
         api_result = {
             "Result": {
                 "ResponseStatus": {"IsSuccess": True, "Errors": []},
-                "FID": "100",
-                "FBillNo": "PO2026030001",
+                "Id": 100,
+                "Number": "CGDD2026030001",
             }
         }
-        with patch("kingdee_mcp.server._post", new_callable=AsyncMock) as mock_post:
+        with patch("kingdee_mcp.server._post_raw", new_callable=AsyncMock) as mock_post:
             mock_post.return_value = api_result
             result = await kingdee_save_bill(
                 SaveInput(
@@ -177,8 +179,29 @@ class TestSaveBill:
                 )
             )
         parsed = json.loads(result)
-        assert parsed["Result"]["FID"] == "100"
-        assert parsed["Result"]["FBillNo"] == "PO2026030001"
+        assert parsed["Result"]["FID"] == 100
+        assert parsed["Result"]["FBillNo"] == "CGDD2026030001"
+
+    @pytest.mark.asyncio
+    async def test_save_failure_returns_error(self):
+        api_result = {
+            "Result": {
+                "ResponseStatus": {
+                    "IsSuccess": False,
+                    "Errors": [{"FieldName": "FMaterialId", "Message": "物料编码不存在"}],
+                }
+            }
+        }
+        with patch("kingdee_mcp.server._post_raw", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = api_result
+            result = await kingdee_save_bill(
+                SaveInput(
+                    form_id="PUR_PurchaseOrder",
+                    model={"FDate": "2026-03-01"},
+                )
+            )
+        parsed = json.loads(result)
+        assert parsed["Result"]["ResponseStatus"]["IsSuccess"] is False
 
 
 # ─── kingdee_audit_bills ────────────────────────────────
@@ -187,17 +210,18 @@ class TestAuditBills:
     @pytest.mark.asyncio
     async def test_audit_returns_success(self):
         api_result = {
-            "ResponseStatus": {"IsSuccess": True, "Errors": []},
-            "Ids": ["1", "2"],
+            "Result": {
+                "ResponseStatus": {"IsSuccess": True, "Errors": []},
+                "Ids": ["1", "2"],
+            }
         }
-        with patch("kingdee_mcp.server._post", new_callable=AsyncMock) as mock_post:
+        with patch("kingdee_mcp.server._post_raw", new_callable=AsyncMock) as mock_post:
             mock_post.return_value = api_result
             result = await kingdee_audit_bills(
                 BillIdsInput(form_id="PUR_PurchaseOrder", bill_ids=["1", "2"])
             )
         parsed = json.loads(result)
-        assert parsed["ResponseStatus"]["IsSuccess"] is True
-        assert len(parsed["Ids"]) == 2
+        assert parsed["Result"]["ResponseStatus"]["IsSuccess"] is True
 
 
 # ─── kingdee_submit_bills ───────────────────────────────
@@ -206,16 +230,18 @@ class TestSubmitBills:
     @pytest.mark.asyncio
     async def test_submit_returns_ids(self):
         api_result = {
-            "ResponseStatus": {"IsSuccess": True, "Errors": []},
-            "Ids": ["3"],
+            "Result": {
+                "ResponseStatus": {"IsSuccess": True, "Errors": []},
+                "Ids": ["3"],
+            }
         }
-        with patch("kingdee_mcp.server._post", new_callable=AsyncMock) as mock_post:
+        with patch("kingdee_mcp.server._post_raw", new_callable=AsyncMock) as mock_post:
             mock_post.return_value = api_result
             result = await kingdee_submit_bills(
                 BillIdsInput(form_id="STK_InStock", bill_ids=["3"])
             )
         parsed = json.loads(result)
-        assert "3" in parsed["Ids"]
+        assert "3" in parsed["Result"]["Ids"]
 
 
 # ─── kingdee_unaudit_bills ─────────────────────────────
@@ -224,16 +250,18 @@ class TestUnauditBills:
     @pytest.mark.asyncio
     async def test_unaudit_returns_ids(self):
         api_result = {
-            "ResponseStatus": {"IsSuccess": True, "Errors": []},
-            "Ids": ["1"],
+            "Result": {
+                "ResponseStatus": {"IsSuccess": True, "Errors": []},
+                "Ids": ["1"],
+            }
         }
-        with patch("kingdee_mcp.server._post", new_callable=AsyncMock) as mock_post:
+        with patch("kingdee_mcp.server._post_raw", new_callable=AsyncMock) as mock_post:
             mock_post.return_value = api_result
             result = await kingdee_unaudit_bills(
                 BillIdsInput(form_id="PUR_PurchaseOrder", bill_ids=["1"])
             )
         parsed = json.loads(result)
-        assert parsed["ResponseStatus"]["IsSuccess"] is True
+        assert parsed["Result"]["ResponseStatus"]["IsSuccess"] is True
 
 
 # ─── kingdee_delete_bills ───────────────────────────────
@@ -242,16 +270,18 @@ class TestDeleteBills:
     @pytest.mark.asyncio
     async def test_delete_returns_ids(self):
         api_result = {
-            "ResponseStatus": {"IsSuccess": True, "Errors": []},
-            "Ids": ["5"],
+            "Result": {
+                "ResponseStatus": {"IsSuccess": True, "Errors": []},
+                "Ids": ["5"],
+            }
         }
-        with patch("kingdee_mcp.server._post", new_callable=AsyncMock) as mock_post:
+        with patch("kingdee_mcp.server._post_raw", new_callable=AsyncMock) as mock_post:
             mock_post.return_value = api_result
             result = await kingdee_delete_bills(
                 BillIdsInput(form_id="PUR_PurchaseOrder", bill_ids=["5"])
             )
         parsed = json.loads(result)
-        assert parsed["ResponseStatus"]["IsSuccess"] is True
+        assert parsed["Result"]["ResponseStatus"]["IsSuccess"] is True
 
 
 # ─── kingdee_push_bill ─────────────────────────────────
@@ -259,7 +289,6 @@ class TestDeleteBills:
 class TestPushBill:
     @pytest.mark.asyncio
     async def test_push_returns_generated_bill(self):
-        # _post returns resp.json(), push endpoint returns {"Result": {"Ids": [...], "Numbers": [...]}}
         api_result = {
             "Result": {
                 "ResponseStatus": {"IsSuccess": True, "Errors": []},
@@ -267,13 +296,13 @@ class TestPushBill:
                 "Numbers": ["XSCKD2026030001"],
             }
         }
-        with patch("kingdee_mcp.server._post", new_callable=AsyncMock) as mock_post:
+        with patch("kingdee_mcp.server._post_raw", new_callable=AsyncMock) as mock_post:
             mock_post.return_value = api_result
             result = await kingdee_push_bill(
                 PushDownInput(
                     form_id="SAL_SaleOrder",
                     target_form_id="SAL_OUTSTOCK",
-                    source_ids=["200"],
+                    source_bill_nos=["XSDD200"],
                 )
             )
         parsed = json.loads(result)
@@ -289,13 +318,13 @@ class TestPushBill:
                 "Numbers": ["XSCKD001", "XSCKD002"],
             }
         }
-        with patch("kingdee_mcp.server._post", new_callable=AsyncMock) as mock_post:
+        with patch("kingdee_mcp.server._post_raw", new_callable=AsyncMock) as mock_post:
             mock_post.return_value = api_result
             result = await kingdee_push_bill(
                 PushDownInput(
                     form_id="SAL_SaleOrder",
                     target_form_id="SAL_OUTSTOCK",
-                    source_ids=["200", "201"],
+                    source_bill_nos=["XSDD200", "XSDD201"],
                 )
             )
         parsed = json.loads(result)

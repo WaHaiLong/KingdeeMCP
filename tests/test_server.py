@@ -75,10 +75,10 @@ class TestUtilityFunctions:
             "FDate DESC",
             0, 20
         )
-        assert payload[0] == "PUR_PurchaseOrder"
-        assert payload[1]["FieldKeys"] == "FID,FBillNo"
-        assert payload[1]["Limit"] == 20
-        assert payload[1]["StartRow"] == 0
+        assert payload["FormId"] == "PUR_PurchaseOrder"
+        assert payload["FieldKeys"] == "FID,FBillNo"
+        assert payload["Limit"] == 20
+        assert payload["StartRow"] == 0
 
     def test_rows_with_list(self):
         assert _rows([1, 2, 3]) == [1, 2, 3]

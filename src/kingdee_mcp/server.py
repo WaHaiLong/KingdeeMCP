@@ -938,6 +938,84 @@ async def kingdee_query_expense_reimburse(params: QueryInput) -> str:
 
 
 # ─────────────────────────────────────────────
+# Prompts（内置提示词模板）
+# ─────────────────────────────────────────────
+
+@mcp.prompt(name="查询采购订单")
+def prompt_query_purchase_orders() -> str:
+    """查询已审核采购订单的提示词模板"""
+    return "请帮我查询最近20条已审核的采购订单，包含单据号、日期、供应商名称和金额，按日期倒序排列。"
+
+
+@mcp.prompt(name="查询即时库存")
+def prompt_query_inventory() -> str:
+    """查询当前库存的提示词模板"""
+    return "请查询当前所有有库存（数量大于0）的物料，列出物料编码、名称、仓库和数量。"
+
+
+@mcp.prompt(name="新建采购订单")
+def prompt_create_purchase_order() -> str:
+    """新建采购订单的提示词模板"""
+    return (
+        "请帮我新建一张采购订单。需要提供以下信息：\n"
+        "1. 供应商编码（如 S001）\n"
+        "2. 物料编码（如 MAT001）\n"
+        "3. 数量\n"
+        "4. 单价\n"
+        "5. 采购部门编码（如 D001）\n"
+        "请告诉我以上信息，我来帮你创建。"
+    )
+
+
+# ─────────────────────────────────────────────
+# Resources（上下文资源）
+# ─────────────────────────────────────────────
+
+@mcp.resource("kingdee://forms")
+def resource_form_catalog() -> str:
+    """金蝶常用表单目录，包含 form_id、中文名称和推荐查询字段"""
+    return json.dumps(
+        [{"form_id": k, "name": v["name"], "alias": v["alias"], "recommended_fields": v["fields"]}
+         for k, v in FORM_CATALOG.items()],
+        ensure_ascii=False, indent=2
+    )
+
+
+@mcp.resource("kingdee://help")
+def resource_help() -> str:
+    """金蝶 MCP Server 使用指南"""
+    return """金蝶 MCP Server 使用指南
+====================
+
+## 查询类操作（只读）
+- kingdee_query_bills        通用单据查询
+- kingdee_query_purchase_orders  查询采购订单
+- kingdee_query_sale_orders      查询销售订单
+- kingdee_query_stock_bills      查询出入库单
+- kingdee_query_inventory        查询即时库存
+- kingdee_query_materials        查询物料档案
+- kingdee_query_partners         查询客户/供应商
+
+## 写操作（会修改 ERP 数据）
+- kingdee_save_bill      新建或修改单据
+- kingdee_submit_bills   提交单据
+- kingdee_audit_bills    审核单据
+- kingdee_unaudit_bills  反审核单据
+- kingdee_delete_bills   删除单据
+- kingdee_push_bill      下推单据
+
+## 元数据
+- kingdee_list_forms   搜索可用表单（不知道 form_id 时先用这个）
+- kingdee_get_fields   获取表单字段列表
+
+## 常用 filter_string 示例
+- 已审核: FDocumentStatus='C'
+- 指定日期: FDate>='2024-01-01' and FDate<='2024-12-31'
+- 模糊搜索: FName like '%关键词%'
+"""
+
+
+# ─────────────────────────────────────────────
 # 入口函数
 # ─────────────────────────────────────────────
 def main():

@@ -55,7 +55,7 @@ AI 会自动调用金蝶 WebAPI 完成操作，**无需手动登录 ERP 界面**
 - **Cline**
 - **Continue**
 - **Claude Code CLI**
-- **OpenClaw**（通过微信/WhatsApp/Telegram 操作金蝶！）
+- **OpenClaw**（通过微信/WhatsApp/Telegram 操作金蝶！将本项目 PyPI 地址发给 OpenClaw，它会自动完成安装并引导填写金蝶配置）
 
 ## 快速开始
 
@@ -91,7 +91,9 @@ pip install kingdee-mcp
 }
 ```
 
-### 4. 重启 Claude Desktop，开始使用
+### 4. 重启客户端，开始使用
+
+> **OpenClaw 用户**：使用 `openclaw mcp set` 配置后会自动热加载，**无需重启网关**。
 
 ## 项目地址
 

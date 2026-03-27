@@ -58,7 +58,7 @@ AI 会自动调用金蝶 API 完成操作，无需手动登录 ERP 界面。
 - **自然语言操作**：用中文直接描述需求，AI 自动转换为 API 调用
 - **异步高性能**：基于 async/await，支持并发请求
 - **自动重试**：Session 过期自动重登，连接失败自动重试
-- **安全认证**：采用金蝶官方 WebAPI 认证，支持 AppSecret 方式
+- **安全认证**：采用金蝶官方 WebAPI 认证，支持 AppSecret 方式，兼容公有云和私有云
 - **类型安全**：基于 Pydantic 数据验证，参数自动补全
 - **易于扩展**：基于 FastMCP 框架，轻松添加自定义工具
 - **使用示例**：提供 [9 个常见业务场景示例](./examples/)，覆盖查询、新建、审核、下推等操作
@@ -126,7 +126,7 @@ uvx kingdee-mcp
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
-| `KINGDEE_SERVER_URL` | 金蝶私有云服务器地址（需包含 /k3cloud/） | `http://192.168.1.100/k3cloud/` |
+| `KINGDEE_SERVER_URL` | 金蝶服务器地址（需包含 /k3cloud/） | `http://192.168.1.100/k3cloud/` |
 | `KINGDEE_ACCT_ID` | 账套ID | `69ae8ed35dab20` |
 | `KINGDEE_USERNAME` | 集成用户名 | `API集成` |
 | `KINGDEE_APP_ID` | 应用ID | `338898_xxxxx` |
@@ -206,7 +206,7 @@ uvx kingdee-mcp
 检查 `KINGDEE_SERVER_URL` 是否正确（需包含 `/k3cloud/` 后缀），确保服务器可访问。
 
 **Q: 支持金蝶云星空公有云吗？**
-目前主要针对私有云测试，公有云用户可能需要调整认证方式。
+支持。公有云和私有云使用相同的 AppSecret 认证方式，配置方式完全一致。
 
 **Q: 如何添加自定义工具？**
 基于 FastMCP 框架，在 `server.py` 中添加 `@mcp.tool()` 装饰器方法即可扩展。

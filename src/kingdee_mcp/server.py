@@ -25,6 +25,7 @@ ACCT_ID    = os.getenv("KINGDEE_ACCT_ID", "")
 USERNAME   = os.getenv("KINGDEE_USERNAME", "")
 APP_ID     = os.getenv("KINGDEE_APP_ID", "")
 APP_SEC    = os.getenv("KINGDEE_APP_SEC", "")
+LCID       = int(os.getenv("KINGDEE_LCID", "2052"))
 
 # WebAPI 端点路径
 _EP = {
@@ -100,7 +101,7 @@ def _url(ep_key: str) -> str:
 async def _login() -> str:
     """登录金蝶，返回 SessionId，失败抛异常"""
     global _session_id
-    payload = {"parameters": [ACCT_ID, USERNAME, APP_ID, APP_SEC, 2052]}
+    payload = {"parameters": [ACCT_ID, USERNAME, APP_ID, APP_SEC, LCID]}
     async with httpx.AsyncClient(timeout=30, proxy=None) as client:
         resp = await client.post(
             _url("login"),
@@ -928,7 +929,7 @@ async def kingdee_query_expense_reimburse(params: QueryInput) -> str:
         return _fmt({
             "form_id": form_id,
             "form_name": "费用报销单",
-            "start_row": params.offset,
+            "start_row": params.start_row,
             "count": len(rows),
             "has_more": len(rows) >= params.limit,
             "data": rows

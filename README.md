@@ -54,7 +54,8 @@ AI 会自动调用金蝶 API 完成操作，无需手动登录 ERP 界面。
 
 ## 功能特性
 
-- **20 个实用工具**：涵盖采购、销售、库存、基础资料等核心业务
+- **20 个 ERP 操作工具**：涵盖采购、销售、库存、基础资料等核心业务
+- **4 个 SQL Server 探查工具**：搜索表、搜索字段、查看表结构、金蝶元数据候选发现
 - **自然语言操作**：用中文直接描述需求，AI 自动转换为 API 调用
 - **异步高性能**：基于 async/await，支持并发请求
 - **自动重试**：Session 过期自动重登，连接失败自动重试
@@ -131,6 +132,11 @@ uvx kingdee-mcp
 | `KINGDEE_USERNAME` | 集成用户名 | `API集成` |
 | `KINGDEE_APP_ID` | 应用ID | `338898_xxxxx` |
 | `KINGDEE_APP_SEC` | 应用密钥（AppSecret） | `f8b75d4ccxxxx` |
+| `MCP_SQLSERVER_HOST` | SQL Server 主机（可选，用于数据库探查） | `localhost` |
+| `MCP_SQLSERVER_PORT` | SQL Server 端口（默认 1433） | `1433` |
+| `MCP_SQLSERVER_DATABASE` | 数据库名 | `AIS20260309171043` |
+| `MCP_SQLSERVER_USER` | SQL Server 用户（建议只读账号） | `sa` |
+| `MCP_SQLSERVER_PASSWORD` | SQL Server 密码 | `xxxx` |
 
 ## 可用工具列表
 
@@ -180,6 +186,19 @@ uvx kingdee-mcp
 审核这几张采购入库单：12345, 12346, 12347
 反审核销售订单 SO2024001
 ```
+
+## SQL Server 探查工具（可选）
+
+配置 `MCP_SQLSERVER_*` 环境变量后可用，帮助理解金蝶数据库结构：
+
+| 工具名称 | 功能说明 |
+|---------|---------|
+| `kingdee_discover_tables` | 按关键字搜索数据库表名 |
+| `kingdee_discover_columns` | 按关键字搜索字段名（含所在表） |
+| `kingdee_describe_table` | 查看表完整结构（字段、类型、主键、外键） |
+| `kingdee_discover_metadata_candidates` | 根据 form_id 发现对应的数据库表名 |
+
+**典型用法**：先问 AI "采购订单在数据库里对应哪张表"，再用 `kingdee_describe_table` 看字段结构。
 
 ## 支持的单据类型（form_id）
 

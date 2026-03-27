@@ -61,6 +61,7 @@ This is a single-file MCP Server (`src/kingdee_mcp/server.py`) that bridges AI c
 | Read-only queries | `kingdee_query_bills`, `kingdee_view_bill`, `kingdee_query_purchase_orders`, `kingdee_query_sale_orders`, `kingdee_query_stock_bills`, `kingdee_query_inventory`, `kingdee_query_materials`, `kingdee_query_partners` |
 | Write operations | `kingdee_save_bill`, `kingdee_submit_bills`, `kingdee_audit_bills`, `kingdee_unaudit_bills`, `kingdee_delete_bills`, `kingdee_push_bill` |
 | Workflow | `kingdee_query_pending_approvals`, `kingdee_query_workflow_status`, `kingdee_workflow_approve`, `kingdee_query_expense_reimburse` |
+| SQL Server introspection | `kingdee_discover_tables`, `kingdee_discover_columns`, `kingdee_describe_table`, `kingdee_discover_metadata_candidates` |
 
 ### Environment Variables (required at runtime)
 
@@ -71,6 +72,11 @@ This is a single-file MCP Server (`src/kingdee_mcp/server.py`) that bridges AI c
 | `KINGDEE_USERNAME` | Integration user name |
 | `KINGDEE_APP_ID` | App ID from Kingdee admin |
 | `KINGDEE_APP_SEC` | App Secret from Kingdee admin |
+| `MCP_SQLSERVER_HOST` | SQL Server host (optional, for DB introspection) |
+| `MCP_SQLSERVER_PORT` | SQL Server port (default 1433) |
+| `MCP_SQLSERVER_DATABASE` | Database name |
+| `MCP_SQLSERVER_USER` | SQL Server user (read-only recommended) |
+| `MCP_SQLSERVER_PASSWORD` | SQL Server password |
 
 ### GitHub Pages (`docs/`)
 

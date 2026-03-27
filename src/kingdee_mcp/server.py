@@ -2,6 +2,7 @@
 金蝶云星空 MCP Server
 支持模块：供应链（采购/销售）、库存（出入库/即时库存）、基础资料（物料/客户/供应商）
 认证方式：私有云 WebAPI + LoginByAppSecret 登录拿 SessionId，后续请求带 Cookie
+SQL Server 探查：系统目录只读查询，辅助理解数据库结构（可选功能）
 """
 
 import json
@@ -26,6 +27,17 @@ USERNAME   = os.getenv("KINGDEE_USERNAME", "")
 APP_ID     = os.getenv("KINGDEE_APP_ID", "")
 APP_SEC    = os.getenv("KINGDEE_APP_SEC", "")
 LCID       = int(os.getenv("KINGDEE_LCID", "2052"))
+
+# ─────────────────────────────────────────────
+# SQL Server 探查配置（可选，从环境变量读取）
+# ─────────────────────────────────────────────
+_SQL_HOST     = os.getenv("MCP_SQLSERVER_HOST", "")
+_SQL_PORT     = os.getenv("MCP_SQLSERVER_PORT", "1433")
+_SQL_USER     = os.getenv("MCP_SQLSERVER_USER", "")
+_SQL_PASSWORD = os.getenv("MCP_SQLSERVER_PASSWORD", "")
+_SQL_DATABASE = os.getenv("MCP_SQLSERVER_DATABASE", "")
+_SQL_SCHEMA   = os.getenv("MCP_SQLSERVER_SCHEMA", "dbo")
+_SQL_ENABLED  = bool(_SQL_HOST and _SQL_USER and _SQL_PASSWORD)
 
 # WebAPI 端点路径
 _EP = {
@@ -182,6 +194,353 @@ def _err(e: Exception) -> str:
 
 def _fmt(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+# ─────────────────────────────────────────────
+# SQL Server 探查工具（可选功能）
+# ─────────────────────────────────────────────
+
+def _sql_connect():
+    """建立 SQL Server 连接"""
+    try:
+        import pyodbc
+    except ImportError:
+        raise RuntimeError(
+            "pyodbc 未安装，请运行：pip install pyodbc\n"
+            "SQL Server 探查功能需要 pyodbc 驱动。"
+        )
+    if not _SQL_ENABLED:
+        raise RuntimeError(
+            "SQL Server 未配置。请设置以下环境变量：\n"
+            "MCP_SQLSERVER_HOST / MCP_SQLSERVER_USER / MCP_SQLSERVER_PASSWORD / MCP_SQLSERVER_DATABASE"
+        )
+    driver = os.getenv("MCP_SQLSERVER_DRIVER", "ODBC Driver 17 for SQL Server")
+    conn_str = (
+        f"DRIVER={{{driver}}};"
+        f"SERVER={_SQL_HOST},{_SQL_PORT};"
+        f"DATABASE={_SQL_DATABASE};"
+        f"UID={_SQL_USER};PWD={_SQL_PASSWORD};"
+        "TrustServerCertificate=yes;"
+    )
+    return pyodbc.connect(conn_str, timeout=10)
+
+
+def _sql_rows(conn, query: str) -> List[dict]:
+    """执行只读查询，返回行列表（字典格式）"""
+    cursor = conn.cursor()
+    cursor.execute(query)
+    columns = [col[0] for col in cursor.description]
+    rows = []
+    for row in cursor.fetchall():
+        rows.append(dict(zip(columns, row)))
+    cursor.close()
+    return rows
+
+
+# ─────────────────────────────────────────────
+# SQL Server 探查工具模型
+# ─────────────────────────────────────────────
+
+class SqlSearchInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    pattern: str = Field(default="", description="搜索关键字（表名/列名），支持模糊匹配，如 'purchase'、'supplier'")
+    limit: int = Field(default=20, ge=1, le=200, description="最大返回条数")
+
+
+class SqlDescribeInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    table_name: str = Field(..., description="表名（不含 Schema 前缀），如 't_PUR_PurchaseOrder'")
+
+
+class MetadataCandidateInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(default="", description="金蝶 form_id，如 'PUR_PurchaseOrder'、'BD_Material'，留空则返回所有候选映射")
+    limit: int = Field(default=20, ge=1, le=200, description="最大返回条数")
+
+
+@mcp.tool(
+    name="kingdee_discover_tables",
+    annotations={"title": "搜索数据库表", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": True}
+)
+async def kingdee_discover_tables(params: SqlSearchInput) -> str:
+    """搜索 SQL Server 中包含关键字的表名（仅查系统目录，不读业务数据）。
+
+    适用场景：
+    - 想知道"采购"相关的表有哪些
+    - 快速定位业务表名，不记得确切名称时
+    - 配合 kingdee_discover_columns 一起使用，先找表再看字段
+
+    搜索范围：SQL Server 系统目录（information_schema.TABLES / sys.tables）
+
+    Returns:
+        str: 表名列表，含表名、类型、创建时间
+    """
+    if not params.pattern:
+        return _fmt({
+            "tip": "请提供搜索关键字，如 pattern='purchase' 或 pattern='供应商'"
+        })
+
+    try:
+        conn = _sql_connect()
+        try:
+            rows = _sql_rows(conn, f"""
+                SELECT TABLE_NAME, TABLE_TYPE
+                FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_SCHEMA = '{_SQL_SCHEMA}'
+                  AND TABLE_TYPE = 'BASE TABLE'
+                  AND (TABLE_NAME LIKE '%{params.pattern}%'
+                       OR TABLE_NAME LIKE '%{params.pattern.upper()}%')
+                ORDER BY TABLE_NAME
+                OFFSET 0 ROWS FETCH NEXT {params.limit} ROWS ONLY
+            """)
+            return _fmt({
+                "pattern": params.pattern,
+                "schema": _SQL_SCHEMA,
+                "database": _SQL_DATABASE,
+                "count": len(rows),
+                "tables": rows
+            })
+        finally:
+            conn.close()
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_discover_columns",
+    annotations={"title": "搜索数据库字段", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": True}
+)
+async def kingdee_discover_columns(params: SqlSearchInput) -> str:
+    """按关键字搜索 SQL Server 中的列名（仅查系统目录，不读业务数据）。
+
+    适用场景：
+    - 想找一个"供应商编码"字段在哪些表里
+    - 接口映射时，确认某个字段在数据库里的实际名称
+    - 快速验证 Kingdee API 字段和数据库字段的对应关系
+
+    Returns:
+        str: 列名搜索结果，含表名、列名、数据类型、是否可空
+    """
+    if not params.pattern:
+        return _fmt({
+            "tip": "请提供搜索关键字，如 pattern='supplier' 或 pattern='金额'"
+        })
+
+    try:
+        conn = _sql_connect()
+        try:
+            rows = _sql_rows(conn, f"""
+                SELECT
+                    c.TABLE_NAME,
+                    c.COLUMN_NAME,
+                    c.DATA_TYPE,
+                    c.CHARACTER_MAXIMUM_LENGTH,
+                    c.IS_NULLABLE,
+                    c.COLUMN_DEFAULT,
+                    c.ORDINAL_POSITION
+                FROM INFORMATION_SCHEMA.COLUMNS c
+                JOIN INFORMATION_SCHEMA.TABLES t
+                  ON c.TABLE_SCHEMA = t.TABLE_SCHEMA
+                 AND c.TABLE_NAME = t.TABLE_NAME
+                 AND t.TABLE_TYPE = 'BASE TABLE'
+                WHERE c.TABLE_SCHEMA = '{_SQL_SCHEMA}'
+                  AND (c.COLUMN_NAME LIKE '%{params.pattern}%'
+                       OR c.COLUMN_NAME LIKE '%{params.pattern.upper()}%')
+                ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION
+                OFFSET 0 ROWS FETCH NEXT {params.limit} ROWS ONLY
+            """)
+            return _fmt({
+                "pattern": params.pattern,
+                "schema": _SQL_SCHEMA,
+                "database": _SQL_DATABASE,
+                "count": len(rows),
+                "columns": rows
+            })
+        finally:
+            conn.close()
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_describe_table",
+    annotations={"title": "查看表结构", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": True}
+)
+async def kingdee_describe_table(params: SqlDescribeInput) -> str:
+    """查看指定表的完整结构（列名、类型、可空、默认值）。
+
+    适用场景：
+    - 知道表名，想了解完整字段列表
+    - 写 SQL 或做数据建模前，查看表结构
+    - 确认 Kingdee API 返回的字段在数据库里的实际类型
+
+    已知金蝶常用表名前缀：
+    - t_PUR_：采购相关（t_PUR_PurchaseOrder 采购订单）
+    - t_SAL_：销售相关（t_SAL_SaleOrder 销售订单）
+    - t_STK_：库存相关（t_STK_InStock 入库单）
+    - t_BD_：基础资料（t_BD_Material 物料、t_BD_Supplier 供应商）
+
+    Returns:
+        str: 表结构详情
+    """
+    try:
+        conn = _sql_connect()
+        try:
+            rows = _sql_rows(conn, f"""
+                SELECT
+                    c.COLUMN_NAME,
+                    c.DATA_TYPE,
+                    c.CHARACTER_MAXIMUM_LENGTH,
+                    c.NUMERIC_PRECISION,
+                    c.NUMERIC_SCALE,
+                    c.IS_NULLABLE,
+                    c.COLUMN_DEFAULT,
+                    c.ORDINAL_POSITION,
+                    pk.COLUMN_NAME AS IS_PRIMARY_KEY,
+                    fk.REFERENCED_TABLE_NAME,
+                    fk.REFERENCED_COLUMN_NAME
+                FROM INFORMATION_SCHEMA.COLUMNS c
+                LEFT JOIN (
+                    SELECT cu.TABLE_SCHEMA, cu.TABLE_NAME, cu.COLUMN_NAME
+                    FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+                    JOIN INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE cu
+                      ON tc.CONSTRAINT_NAME = cu.CONSTRAINT_NAME
+                    WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+                      AND cu.TABLE_SCHEMA = '{_SQL_SCHEMA}'
+                ) pk ON pk.TABLE_SCHEMA = c.TABLE_SCHEMA
+                   AND pk.TABLE_NAME = c.TABLE_NAME
+                   AND pk.COLUMN_NAME = c.COLUMN_NAME
+                LEFT JOIN (
+                    SELECT
+                        kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.COLUMN_NAME,
+                        kcu2.TABLE_NAME AS REFERENCED_TABLE_NAME,
+                        kcu2.COLUMN_NAME AS REFERENCED_COLUMN_NAME
+                    FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
+                    JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+                      ON rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+                    JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu2
+                      ON rc.UNIQUE_CONSTRAINT_NAME = kcu2.CONSTRAINT_NAME
+                    WHERE kcu.TABLE_SCHEMA = '{_SQL_SCHEMA}'
+                ) fk ON fk.TABLE_SCHEMA = c.TABLE_SCHEMA
+                   AND fk.TABLE_NAME = c.TABLE_NAME
+                   AND fk.COLUMN_NAME = c.COLUMN_NAME
+                WHERE c.TABLE_SCHEMA = '{_SQL_SCHEMA}'
+                  AND c.TABLE_NAME = '{params.table_name}'
+                ORDER BY c.ORDINAL_POSITION
+            """)
+            if not rows:
+                return _fmt({"error": f"表 '{params.table_name}' 不存在或无权访问。"})
+
+            return _fmt({
+                "table": params.table_name,
+                "schema": _SQL_SCHEMA,
+                "database": _SQL_DATABASE,
+                "count": len(rows),
+                "columns": rows
+            })
+        finally:
+            conn.close()
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_discover_metadata_candidates",
+    annotations={"title": "金蝶元数据候选发现", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": True}
+)
+async def kingdee_discover_metadata_candidates(params: MetadataCandidateInput) -> str:
+    """发现金蝶数据库中与指定 form_id 或 form_id 前缀对应的表。
+
+    这是面向金蝶/K3 场景的辅助工具：根据 form_id 推测对应的数据库表名。
+
+    form_id → 表名对应规律：
+    - PUR_PurchaseOrder  → t_PUR_PurchaseOrder（采购订单）
+    - SAL_SaleOrder     → t_SAL_SaleOrder（销售订单）
+    - STK_InStock       → t_STK_InStock（入库单）
+    - BD_Material       → t_BD_Material（物料）
+    - BD_Supplier       → t_BD_Supplier（供应商）
+    - BD_Customer       → t_BD_Customer（客户）
+
+    适用场景：
+    - 想知道某个 form_id 对应数据库里哪张表
+    - 想探索某类单据的所有关联表（如采购全流程：订单→收料→入库）
+    - 理解金蝶 form_id 和数据库表名的映射关系
+
+    Returns:
+        str: form_id 与表名的候选映射列表
+    """
+    # 常见 form_id → 表名前缀映射
+    # 常见 form_id → 表名映射（注意：表名前缀因金蝶版本不同可能为 T_ 或 t_，请以实际数据库为准）
+    CANDIDATE_PATTERNS = [
+        # 基础资料
+        ("BD_Material",    "T_BD_MATERIAL",    "物料"),
+        ("BD_Supplier",    "T_BD_SUPPLIER",    "供应商"),
+        ("BD_Customer",    "T_BD_CUSTOMER",    "客户"),
+        ("BD_Department",  "T_BD_DEPARTMENT",   "部门"),
+        ("BD_Empinfo",     "T_BD_EMPINFO",     "员工"),
+        ("BD_Stock",       "T_BD_STOCK",       "仓库"),
+        # 采购
+        ("PUR_PurchaseOrder", "T_PUR_PURCHASEORDER", "采购订单"),
+        # 销售
+        ("SAL_SaleOrder",  "T_SAL_SALEORDER",  "销售订单"),
+        # 库存
+        ("STK_InStock",   "T_STK_INSTOCK",   "入库单"),
+        # 应收应付
+        ("AP_Payable",     "T_AP_PAYABLE",    "应付单"),
+        ("AR_Receivable",  "T_AR_RECEIVABLE", "应收单"),
+        # 生产
+        ("PRD_MO",         "T_PRD_MO",        "生产订单"),
+    ]
+
+    try:
+        conn = _sql_connect()
+        try:
+            # 按 form_id 过滤（如指定了）
+            if params.form_id:
+                candidates = [
+                    (fid, tbl, name) for fid, tbl, name in CANDIDATE_PATTERNS
+                    if params.form_id.lower() in fid.lower()
+                ]
+            else:
+                candidates = CANDIDATE_PATTERNS
+
+            candidates = candidates[:params.limit]
+
+            # 检查哪些表真实存在
+            results = []
+            for form_id, table_name, description in candidates:
+                rows = _sql_rows(conn, f"""
+                    SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
+                    WHERE TABLE_SCHEMA = '{_SQL_SCHEMA}'
+                      AND TABLE_NAME = '{table_name}'
+                      AND TABLE_TYPE = 'BASE TABLE'
+                """)
+                results.append({
+                    "form_id": form_id,
+                    "table_name": table_name,
+                    "description": description,
+                    "exists": len(rows) > 0,
+                    "suggestion": (
+                        f"调用 kingdee_describe_table(table_name='{table_name}') 查看表结构"
+                        if rows else f"表 '{table_name}' 不存在，可能使用不同命名规则"
+                    )
+                })
+
+            return _fmt({
+                "form_id_filter": params.form_id or "(全部)",
+                "schema": _SQL_SCHEMA,
+                "database": _SQL_DATABASE,
+                "count": len(results),
+                "results": results
+            })
+        finally:
+            conn.close()
+    except Exception as e:
+        return _err(e)
 
 
 def _query_payload(form_id: str, field_keys: str, filter_string: str,

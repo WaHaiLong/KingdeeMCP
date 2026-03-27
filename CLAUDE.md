@@ -22,7 +22,10 @@ python -m hatchling build
 pip install "mcp[cli]>=1.0.0" httpx pydantic
 ```
 
-There are no tests in this project currently.
+Run tests:
+```bash
+python -m pytest tests/ -v
+```
 
 ## Architecture
 
@@ -64,5 +67,9 @@ This is a single-file MCP Server (`src/kingdee_mcp/server.py`) that bridges AI c
 
 ### GitHub Pages (`docs/`)
 
-The website at `https://wahailong.github.io/KingdeeMCP/` is a single static HTML file (`docs/index.html`). The deploy workflow (`.github/workflows/deploy-pages.yml`) triggers on push to `main` branch — **note the repo uses `master`**, so the workflow must be triggered manually via `workflow_dispatch` or the branch trigger needs updating.
+The website at `https://wahailong.github.io/KingdeeMCP/` is a single static HTML file (`docs/index.html`). The deploy workflow (`.github/workflows/deploy-pages.yml`) triggers on push to `main` branch.
+
+### Examples (`examples/`)
+
+Business scenario examples showing how to use each tool. See `examples/README.md` for the full list. Useful as reference when helping users with Kingdee MCP queries.
 

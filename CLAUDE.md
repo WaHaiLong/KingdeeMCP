@@ -28,9 +28,11 @@ Run tests:
 python -m pytest tests/ -v
 
 # Integration tests (requires Kingdee server + env vars)
+# Tip: Credentials are stored in C:\Users\ZnL\kingdee-mcp.bat for reference
 KINGDEE_SERVER_URL=http://your-server/k3cloud/ \
 KINGDEE_ACCT_ID=... KINGDEE_USERNAME=... \
 KINGDEE_APP_ID=... KINGDEE_APP_SEC=... \
+KINGDEE_LCID=2052 \
 python -m pytest tests/test_integration.py -v
 ```
 

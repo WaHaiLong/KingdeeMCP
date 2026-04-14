@@ -18,25 +18,27 @@
   "params": {
     "form_id": "SAL_SaleOrder",
     "target_form_id": "SAL_OUTSTOCK",
-    "source_ids": ["200001"]
+    "source_bill_nos": ["XSDD2026030001"]
   }
 }
 ```
 
-## 返回结果
+## 返回结果（结构化格式）
 
 ```json
 {
-  "Result": {
-    "ResponseStatus": {
-      "IsSuccess": true,
-      "Errors": []
-    },
-    "Ids": ["300001"],
-    "Numbers": ["XSCKD2026030001"]
-  }
+  "op": "push",
+  "success": true,
+  "source_bill_nos": ["XSDD2026030001"],
+  "target_form_id": "SAL_OUTSTOCK",
+  "target_bill_nos": ["XSCKD2026030001"],
+  "next_action": "submit+audit",
+  "next_action_desc": "目标单已生成，请依次调用 kingdee_submit_bills + kingdee_audit_bills",
+  "tip": "已生成 1 张目标单据，请依次调用 kingdee_submit_bills + kingdee_audit_bills 完成提交和审核"
 }
 ```
+
+**关键**：下推成功≠操作完成！目标单还是草稿状态，必须继续提交+审核。
 
 ## 常用下推场景
 
@@ -55,7 +57,56 @@
   "params": {
     "form_id": "SAL_SaleOrder",
     "target_form_id": "SAL_OUTSTOCK",
-    "source_ids": ["200001", "200002", "200003"]
+    "source_bill_nos": ["XSDD001", "XSDD002", "XSDD003"]
+  }
+}
+```
+
+## 指定转换规则
+
+demo 环境无默认转换规则，必须显式指定 `rule_id`：
+
+```json
+{
+  "tool": "kingdee_push_bill",
+  "params": {
+    "form_id": "PUR_PurchaseOrder",
+    "target_form_id": "STK_InStock",
+    "source_bill_nos": ["CGDD000025"],
+    "rule_id": "PUR_PurchaseOrder-STK_InStock"
+  }
+}
+```
+
+## 启用默认转换规则
+
+生产环境可使用 `enable_default_rule=true`，让 Kingdee 自动选择下推规则，无需手动指定 rule_id：
+
+```json
+{
+  "tool": "kingdee_push_bill",
+  "params": {
+    "form_id": "PUR_PurchaseOrder",
+    "target_form_id": "STK_InStock",
+    "source_bill_nos": ["CGDD000025"],
+    "enable_default_rule": true
+  }
+}
+```
+
+## 保存失败时暂存
+
+下推后若因关联数量等原因保存失败，`draft_on_fail=true` 可将目标单据转为暂存状态（无单据编号），而非直接报错：
+
+```json
+{
+  "tool": "kingdee_push_bill",
+  "params": {
+    "form_id": "PUR_PurchaseOrder",
+    "target_form_id": "STK_InStock",
+    "source_bill_nos": ["CGDD000025"],
+    "rule_id": "PUR_PurchaseOrder-STK_InStock",
+    "draft_on_fail": true
   }
 }
 ```
@@ -64,5 +115,6 @@
 
 - 源单据必须**已审核**才能下推
 - 下推后生成的目标单据是草稿状态，需要提交和审核
-- 如果下推失败，检查源单据是否满足下推规则（如数量是否超出）
-- 指定 `rule_ids` 可以选择特定的下推转换规则
+- demo 环境必须指定 `rule_id`（从 `T_META_CONVERTRULE` 表查询）
+- `rule_id` 和 `enable_default_rule` 互斥，不能同时使用
+- 响应中 `ConvertResponseStatus` 包含每行转换结果，`ResponseStatus` 包含保存结果

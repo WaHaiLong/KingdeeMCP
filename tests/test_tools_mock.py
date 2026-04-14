@@ -128,7 +128,9 @@ class TestQueryBills:
             result = await kingdee_query_bills(
                 QueryInput(form_id="PUR_PurchaseOrder")
             )
-        assert "错误" in result
+        # 新的错误格式是 {"error": true, "errors": [...]}，不是 "错误：..."
+        assert '"error": true' in result
+        assert '"errors"' in result
 
 
 # ─── kingdee_view_bill ─────────────────────────────────
@@ -179,11 +181,14 @@ class TestSaveBill:
                 )
             )
         parsed = json.loads(result)
-        assert parsed["Result"]["FID"] == 100
-        assert parsed["Result"]["FBillNo"] == "CGDD2026030001"
+        assert parsed["op"] == "save"
+        assert parsed["success"] is True
+        assert parsed["fid"] == 100
+        assert parsed["bill_no"] == "CGDD2026030001"
+        assert parsed["next_action"] == "submit"
 
     @pytest.mark.asyncio
-    async def test_save_failure_returns_error(self):
+    async def test_save_failure_returns_errors(self):
         api_result = {
             "Result": {
                 "ResponseStatus": {
@@ -201,7 +206,8 @@ class TestSaveBill:
                 )
             )
         parsed = json.loads(result)
-        assert parsed["Result"]["ResponseStatus"]["IsSuccess"] is False
+        assert parsed["success"] is False
+        assert len(parsed["errors"]) == 1
 
 
 # ─── kingdee_audit_bills ────────────────────────────────
@@ -221,7 +227,10 @@ class TestAuditBills:
                 BillIdsInput(form_id="PUR_PurchaseOrder", bill_ids=["1", "2"])
             )
         parsed = json.loads(result)
-        assert parsed["Result"]["ResponseStatus"]["IsSuccess"] is True
+        assert parsed["op"] == "audit"
+        assert parsed["success"] is True
+        assert parsed["bill_ids"] == ["1", "2"]
+        assert parsed["next_action"] is None  # audit 后流程完成
 
 
 # ─── kingdee_submit_bills ───────────────────────────────
@@ -241,7 +250,10 @@ class TestSubmitBills:
                 BillIdsInput(form_id="STK_InStock", bill_ids=["3"])
             )
         parsed = json.loads(result)
-        assert "3" in parsed["Result"]["Ids"]
+        assert parsed["op"] == "submit"
+        assert parsed["success"] is True
+        assert parsed["bill_ids"] == ["3"]
+        assert parsed["next_action"] == "audit"
 
 
 # ─── kingdee_unaudit_bills ─────────────────────────────
@@ -261,7 +273,10 @@ class TestUnauditBills:
                 BillIdsInput(form_id="PUR_PurchaseOrder", bill_ids=["1"])
             )
         parsed = json.loads(result)
-        assert parsed["Result"]["ResponseStatus"]["IsSuccess"] is True
+        assert parsed["op"] == "unaudit"
+        assert parsed["success"] is True
+        assert parsed["bill_ids"] == ["1"]
+        assert parsed["next_action"] is None  # 反审核后流程完成
 
 
 # ─── kingdee_delete_bills ───────────────────────────────
@@ -281,7 +296,9 @@ class TestDeleteBills:
                 BillIdsInput(form_id="PUR_PurchaseOrder", bill_ids=["5"])
             )
         parsed = json.loads(result)
-        assert parsed["Result"]["ResponseStatus"]["IsSuccess"] is True
+        assert parsed["op"] == "delete"
+        assert parsed["success"] is True
+        assert parsed["bill_ids"] == ["5"]
 
 
 # ─── kingdee_push_bill ─────────────────────────────────
@@ -306,8 +323,11 @@ class TestPushBill:
                 )
             )
         parsed = json.loads(result)
-        assert parsed["Result"]["Ids"][0] == "300"
-        assert parsed["Result"]["Numbers"][0] == "XSCKD2026030001"
+        assert parsed["op"] == "push"
+        assert parsed["success"] is True
+        assert parsed["target_bill_nos"] == ["XSCKD2026030001"]
+        assert parsed["next_action"] == "submit+audit"
+        assert "tip" in parsed
 
     @pytest.mark.asyncio
     async def test_push_multiple_source_ids(self):
@@ -328,4 +348,63 @@ class TestPushBill:
                 )
             )
         parsed = json.loads(result)
-        assert len(parsed["Result"]["Ids"]) == 2
+        assert len(parsed["target_bill_nos"]) == 2
+        assert parsed["source_bill_nos"] == ["XSDD200", "XSDD201"]
+
+    @pytest.mark.asyncio
+    async def test_push_with_enable_default_rule(self):
+        api_result = {
+            "Result": {
+                "ResponseStatus": {"IsSuccess": True, "Errors": []},
+                "Ids": ["300"],
+                "Numbers": ["CGRKD001"],
+            }
+        }
+        with patch("kingdee_mcp.server._post_raw", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = api_result
+            result = await kingdee_push_bill(
+                PushDownInput(
+                    form_id="PUR_PurchaseOrder",
+                    target_form_id="STK_InStock",
+                    source_bill_nos=["CGDD001"],
+                    enable_default_rule=True,
+                )
+            )
+            # 验证传给 Kingdee 的 body 包含 IsEnableDefaultRule
+            call_args = mock_post.call_args
+            assert call_args[0][0] == "push"
+            assert call_args[0][1] == "PUR_PurchaseOrder"
+            assert call_args[0][2]["IsEnableDefaultRule"] == "true"
+            assert "RuleId" not in call_args[0][2]
+        # 验证返回格式
+        parsed = json.loads(result)
+        assert parsed["success"] is True
+        assert parsed["next_action"] == "submit+audit"
+
+    @pytest.mark.asyncio
+    async def test_push_with_rule_id_and_draft_on_fail(self):
+        api_result = {
+            "Result": {
+                "ResponseStatus": {"IsSuccess": True, "Errors": []},
+                "Ids": ["400"],
+                "Numbers": ["CGRKD002"],
+            }
+        }
+        with patch("kingdee_mcp.server._post_raw", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = api_result
+            result = await kingdee_push_bill(
+                PushDownInput(
+                    form_id="PUR_PurchaseOrder",
+                    target_form_id="STK_InStock",
+                    source_bill_nos=["CGDD002"],
+                    rule_id="PUR_PurchaseOrder-STK_InStock",
+                    draft_on_fail=True,
+                )
+            )
+            call_args = mock_post.call_args
+            assert call_args[0][2]["RuleId"] == "PUR_PurchaseOrder-STK_InStock"
+            assert call_args[0][2]["IsDraftWhenSaveFail"] == "true"
+            # rule_id 和 enable_default_rule 互斥，不应同时设置 IsEnableDefaultRule
+            assert "IsEnableDefaultRule" not in call_args[0][2]
+        parsed = json.loads(result)
+        assert parsed["success"] is True

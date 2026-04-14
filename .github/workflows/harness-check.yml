@@ -1,0 +1,32 @@
+name: Harness Constraint Check
+
+on:
+  push:
+    paths:
+      - 'src/**/*.py'
+      - 'harness/**'
+  pull_request:
+    paths:
+      - 'src/**/*.py'
+      - 'harness/**'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Run harness rules check (dry-run with sample)
+        run: |
+          python scripts/check_harness.py --rules
+
+      - name: Run unit tests
+        run: python -m pytest tests/test_server.py -v

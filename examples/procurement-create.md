@@ -38,19 +38,28 @@
 }
 ```
 
-## 返回结果
+## 返回结果（结构化格式）
 
 ```json
 {
-  "Result": {
-    "ResponseStatus": {
-      "IsSuccess": true,
-      "Errors": []
-    },
-    "FID": "100012",
-    "FBillNo": "CGRK2026030012"
-  }
+  "op": "save",
+  "success": true,
+  "fid": "100012",
+  "bill_no": "CGRK2026030012",
+  "next_action": "submit",
+  "next_action_desc": "建议调用 kingdee_submit_bills 提交单据至审核队列",
+  "tip": "单据已保存为草稿，需要提交+审核后才能生效"
 }
+```
+
+**关键**：不要在 save 成功后停止！必须继续提交+审核才算流程完成。
+
+## 完整流程
+
+```
+1. kingdee_save_bill      → 生成草稿（返回 next_action=submit）
+2. kingdee_submit_bills   → 提交至审核队列（返回 next_action=audit）
+3. kingdee_audit_bills    → 审核通过，单据生效 ✓
 ```
 
 ## 注意事项

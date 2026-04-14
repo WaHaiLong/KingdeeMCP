@@ -3,16 +3,206 @@
 支持模块：供应链（采购/销售）、库存（出入库/即时库存）、基础资料（物料/客户/供应商）
 认证方式：私有云 WebAPI + LoginByAppSecret 登录拿 SessionId，后续请求带 Cookie
 SQL Server 探查：系统目录只读查询，辅助理解数据库结构（可选功能）
+Harness 层：操作链约束（harness/）、反馈循环、结构化退出条件、失败追溯
 """
 
 import json
 import os
-from typing import Any, List, Optional
+import re
+from typing import Any, List, Literal, Optional
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.prompts.base import UserMessage
 from pydantic import BaseModel, ConfigDict, Field
+
+# ─────────────────────────────────────────────
+# 已知错误模式库（记忆层）
+# 每次遇到新错误模式后追加，格式：("错误关键词", "原因说明", "建议操作")
+# ─────────────────────────────────────────────
+KNOWN_ERROR_PATTERNS: List[tuple[str, str, str]] = [
+    # HTTP 层
+    ("502",        "金蝶不支持 HTTP/2，需显式传 http1=True",         "确保 httpx AsyncHTTPTransport(http1=True)"),
+    ("Bad Gateway","同上，金蝶服务器不支持 HTTP/2",                   "同上"),
+    ("会话",       "Session 过期或未登录",                            "调用 _login() 重新登录"),
+    ("session",    "Session 过期（英文原文）",                         "调用 _login() 重新登录"),
+    # 业务层（常见单据操作错误）
+    ("关联数量",   "累计关联数量已达订单数量，无法下推",               "检查 FReceiveQty+FStockInQty 是否已满"),
+    ("业务关闭",   "该行已业务关闭，不允许操作",                       "检查 FBusinessClose 状态或联系管理员反关闭"),
+    ("冻结",       "分录行已冻结，不允许编辑和关联操作",               "联系管理员解冻后重试"),
+    ("终止",       "分录行已终止，不允许关联操作",                     "检查 FTerminateStatus 状态"),
+    ("交货数量",   "超过交货数量控制范围",                             "检查 FDlyCntl_Low/High 配置"),
+    ("权限",       "集成用户没有对应单据的操作权限",                   "联系金蝶管理员开通权限"),
+    ("字段不存在", "字段在当前账套/模块中未启用",                      "用 kingdee_get_fields 确认可用字段，或改用替代字段"),
+    ("保存失败",   "下推或保存失败，详情见 ConvertResponseStatus",     "检查 ConvertResponseStatus 每行错误原因"),
+]
+
+# 单据操作生命周期状态机（约束层）
+# 状态流转: 创建 → 提交 → 审核 → ... → 反审核(撤销)
+# 目标漂移根源：AI 以为 Save=结束，实际上 Save 只到草稿状态
+DOC_LIFECYCLE: dict[str, dict] = {
+    # 通用写操作后的 next_action 建议
+    "save":    {"from": "草稿",   "to": "草稿",   "success": True,  "next_action": "submit",  "next_action_desc": "建议调用 kingdee_submit_bills 提交单据至审核队列"},
+    "submit":  {"from": "草稿",   "to": "待审核", "success": True,  "next_action": "audit",   "next_action_desc": "建议调用 kingdee_audit_bills 审核单据"},
+    "audit":   {"from": "待审核", "to": "已审核", "success": True,  "next_action": None,      "next_action_desc": "操作完成，单据已生效"},
+    "unaudit": {"from": "已审核", "to": "待审核", "success": True,  "next_action": None,      "next_action_desc": "已反审核，可修改后重新提交"},
+    "delete":  {"from": "草稿",   "to": "已删除", "success": True,  "next_action": None,      "next_action_desc": "单据已删除"},
+    "push":    {"from": "源单",   "to": "目标单草稿", "success": True, "next_action": "submit+audit", "next_action_desc": "目标单已生成，请依次调用 kingdee_submit_bills + kingdee_audit_bills"},
+}
+
+def _parse_kingdee_errors(result: Any) -> dict:
+    """从 Kingdee API 响应中提取业务错误（反馈层核心函数）"""
+    errors = []
+    try:
+        rs = result.get("Result", result) if isinstance(result, dict) else {}
+        status = rs.get("ResponseStatus", {})
+        if isinstance(status, dict) and not status.get("IsSuccess", True):
+            for err in status.get("Errors", []):
+                msg = err.get("Message", "")
+                # 匹配已知错误模式，返回 structured feedback
+                matched = None
+                for pattern, reason, suggestion in KNOWN_ERROR_PATTERNS:
+                    if pattern.lower() in msg.lower():
+                        matched = {"reason": reason, "suggestion": suggestion}
+                        break
+                errors.append({
+                    "message": msg,
+                    "detail": err.get("Dsc", ""),
+                    "field": err.get("FieldName", ""),
+                    "matched": matched,
+                })
+        # Push 操作特有的 ConvertResponseStatus
+        conv = rs.get("ConvertResponseStatus", [])
+        if conv:
+            for i, c in enumerate(conv):
+                if not c.get("IsSuccess", True):
+                    errors.append({
+                        "type": "convert",
+                        "row": i,
+                        "message": c.get("Message", "转换失败"),
+                        "detail": c.get("Description", ""),
+                    })
+    except Exception:
+        pass
+    return errors
+
+
+def _result_status(result: Any, op: str) -> dict:
+    """构建结构化操作结果（约束层 + 反馈层）"""
+    rs = result.get("Result", result) if isinstance(result, dict) else {}
+    status = rs.get("ResponseStatus", {})
+
+    if isinstance(status, dict):
+        ok = status.get("IsSuccess", False)
+        errors = _parse_kingdee_errors(result) if not ok else []
+    else:
+        ok = True
+        errors = []
+
+    lifecycle = DOC_LIFECYCLE.get(op, {})
+
+    # 提取单据标识
+    fid = rs.get("FID") or rs.get("Id")
+    bill_no = rs.get("FBillNo") or rs.get("Number")
+    ids = rs.get("Ids") or (fid if fid else None)
+
+    out: dict[str, Any] = {
+        "op": op,
+        "success": ok,
+        "response_status": status,
+    }
+    if fid:
+        out["fid"] = fid
+    if bill_no:
+        out["bill_no"] = bill_no
+    if ids:
+        out["ids"] = [ids] if isinstance(ids, str) or isinstance(ids, int) else list(ids)
+    if errors:
+        out["errors"] = errors
+        out["tip"] = (
+            "单据操作失败，请检查 errors 列表中的 reason 和 suggestion 字段。"
+            "如需更多信息，调用 kingdee_view_bill 查看单据详情。"
+        )
+    if ok:
+        # next_action 始终返回（None 表示流程完成）
+        out["next_action"] = lifecycle.get("next_action")
+        if out["next_action"]:
+            out["next_action_desc"] = lifecycle["next_action_desc"]
+
+    return out
+
+
+def add_known_pattern(pattern: str, reason: str, suggestion: str) -> None:
+    """向已知错误模式库追加新模式（记忆层核心函数）。
+
+    用法示例：
+        # 当 AI 遇到新错误时，可在代码中追加：
+        add_known_pattern("特定错误关键词", "原因说明", "建议操作")
+        # 下次遇到同类错误时，系统会自动给出 reason 和 suggestion
+
+    适用场景：
+    - 测试中发现新的金蝶业务错误
+    - 集成测试遇到之前未记录的错误模式
+    - 生产环境发现新的错误关键词
+
+    注意：追加后建议同步更新 extract_remember.py 或手动维护记忆文件。
+    """
+    global KNOWN_ERROR_PATTERNS
+    # 防重
+    existing = [p[0] for p in KNOWN_ERROR_PATTERNS]
+    if pattern not in existing:
+        KNOWN_ERROR_PATTERNS.append((pattern, reason, suggestion))
+
+
+def _err(e: Exception, extra_errors: list = None, op: str = "") -> str:
+    """标准化错误返回（反馈层），整合 Kingdee 业务错误 + HTTP 错误
+
+    Args:
+        e: 异常对象
+        extra_errors: 额外的已解析错误列表
+        op: 操作类型（用于失败日志记录），如 "save" / "push" / "submit"
+    """
+    # 先追加已解析的金蝶业务错误
+    extra = extra_errors or []
+
+    if isinstance(e, httpx.HTTPStatusError):
+        code = e.response.status_code
+        msgs = {
+            401: "认证失败，请检查 AppID/AppSec 配置",
+            403: "权限不足，请确认集成用户拥有对应单据权限",
+            404: "接口地址不存在，请检查 KINGDEE_SERVER_URL",
+            429: "请求过于频繁，请稍后重试",
+        }
+        raw = e.response.text[:300].strip()
+        err_item = {"type": "http", "code": code, "message": msgs.get(code, f"HTTP {code}"), "raw": raw}
+        # 匹配已知错误模式
+        for pattern, reason, suggestion in KNOWN_ERROR_PATTERNS:
+            if pattern in raw:
+                err_item["matched"] = {"reason": reason, "suggestion": suggestion}
+                break
+        extra.append(err_item)
+    elif isinstance(e, httpx.TimeoutException):
+        extra.append({"type": "timeout", "message": "请求超时，请检查服务器连通性"})
+    elif isinstance(e, RuntimeError):
+        extra.append({"type": "runtime", "message": str(e)})
+    else:
+        extra.append({"type": "unknown", "message": f"{type(e).__name__} - {e}"})
+
+    result = {"error": True, "errors": extra}
+
+    # 失败追溯：记录到 failure_log.jsonl（记忆层核心）
+    if op and extra:
+        try:
+            from scripts.failure_log import FailureLogger
+            FailureLogger().log(op, result)
+        except Exception:
+            pass  # 不因日志记录失败影响正常返回
+
+    return _fmt(result)
+
+
+def _fmt(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2)
 
 # ─────────────────────────────────────────────
 # 服务器初始化
@@ -58,48 +248,523 @@ _session_id: Optional[str] = None
 
 # ─────────────────────────────────────────────
 # 常用表单目录（form_id 映射）
+# 字段说明：
+#   name       — 表单中文名称
+#   alias      — 常用别名列表（用于 AI 理解用户意图）
+#   desc       — 表单用途描述（帮助 AI 判断何时使用该表单）
+#   fields     — 推荐查询字段（逗号分隔，*标记字段在某些环境可能不可用）
+#   business_rules — 关键业务规则（字段→含义 / 操作限制）
+#   db_tables  — 对应数据库表名（主表 + 分录表）
+#
+# 环境说明：
+#   字段标注 [需启用供应链] 表示需要采购/库存模块启用后才存在
+#   业务规则字段（如 FLinkQty/FBusinessClose）在 demo 环境可能不存在
+#   💡 REMEMBER: demo 环境缺失字段：FLinkQty, FBusinessClose, FFreezeStatus, FTerminateStatus, FDlyCntl_Low/High, FCloseStatus, FTotalAmount
+#   如遇字段不存在错误，请用 kingdee_get_fields(form_id) 查看实际可用字段
 # ─────────────────────────────────────────────
+
 FORM_CATALOG = {
+    # ══════════════════════════════════════════════════════
     # 基础资料
-    "BD_Material": {"name": "物料", "alias": ["物料", "材料", "商品", "产品"], "fields": "FMaterialId,FNumber,FName,FSpecification,FBaseUnitId.FName"},
-    "BD_Customer": {"name": "客户", "alias": ["客户", "客户档案"], "fields": "FCustId,FNumber,FName,FShortName,FContact,FPhone"},
-    "BD_Supplier": {"name": "供应商", "alias": ["供应商", "供应商档案", "厂家"], "fields": "FSupplierId,FNumber,FName,FShortName,FContact,FPhone"},
-    "BD_Department": {"name": "部门", "alias": ["部门", "组织"], "fields": "FDeptId,FNumber,FName,FFullName"},
-    "BD_Empinfo": {"name": "员工", "alias": ["员工", "人员", "职员", "用户"], "fields": "FID,FStaffNumber"},
-    "BD_Stock": {"name": "仓库", "alias": ["仓库", "库房", "仓位"], "fields": "FStockId,FNumber,FName,FGroup.FName"},
-    "BD_Unit": {"name": "计量单位", "alias": ["单位", "计量单位"], "fields": "FUnitId,FNumber,FName"},
-    "BD_Currency": {"name": "币别", "alias": ["币别", "货币"], "fields": "FCurrencyId,FNumber,FName,FSymbol"},
+    # ══════════════════════════════════════════════════════
+    "BD_Material": {
+        "name": "物料",
+        "alias": ["物料", "材料", "商品", "产品"],
+        "desc": "企业采购、生产、销售的最小存货单位，是供应链和财务核算的基础。",
+        "fields": "FMaterialId,FNumber,FName,FSpecification,FUnitID.FName,FMaterialGroup.FName,FDocumentStatus",
+        "db_tables": ("T_BD_MATERIAL", "T_BD_MATERIALENTRY"),
+    },
+    "BD_Customer": {
+        "name": "客户",
+        "alias": ["客户", "客户档案", "客户资料"],
+        "desc": "企业销售业务中的购买方（下游）。",
+        "fields": "FNumber,FName,FShortName,FContact,FPhone,FDocumentStatus",
+        "db_tables": ("T_BD_CUSTOMER",),
+    },
+    "BD_Supplier": {
+        "name": "供应商",
+        "alias": ["供应商", "供应商档案", "厂家", "供货商"],
+        "desc": "企业采购业务中的供应方（上游）。",
+        "fields": "FSupplierId,FNumber,FName,FShortName,FContact,FPhone,FDocumentStatus",
+        "db_tables": ("T_BD_SUPPLIER",),
+    },
+    "BD_Department": {
+        "name": "部门",
+        "alias": ["部门", "组织", "组织架构"],
+        "desc": "企业内部组织单元，用于业务归属和权限控制。",
+        "fields": "FDeptId,FNumber,FName,FFullName,FParentID.FName",
+        "db_tables": ("T_BD_DEPARTMENT",),
+    },
+    "BD_Empinfo": {
+        "name": "员工",
+        "alias": ["员工", "人员", "职员", "用户", "采购员"],
+        "desc": "企业职员资料，常用于采购员、销售员等业务角色指定。",
+        "fields": "FID,FStaffNumber,FName,FDeptId.FName,FDocumentStatus",
+        "db_tables": ("T_BD_EMPINFO",),
+    },
+    "BD_Stock": {
+        "name": "仓库",
+        "alias": ["仓库", "库房", "仓位", "库存组织"],
+        "desc": "物料存储位置，是出入库和库存管理的核心维度。",
+        "fields": "FStockId,FNumber,FName,FGroup.FName,FStockType.FName,FDocumentStatus",
+        "db_tables": ("T_BD_STOCK",),
+    },
+    "BD_Unit": {
+        "name": "计量单位",
+        "alias": ["单位", "计量单位", "单位组"],
+        "desc": "物料数量的计量标准，如个、件、箱、吨等。",
+        "fields": "FUnitId,FNumber,FName,FType",
+        "db_tables": ("T_BD_UNIT",),
+    },
+    "BD_Currency": {
+        "name": "币别",
+        "alias": ["币别", "货币", "币种"],
+        "desc": "业务交易的货币类型，如人民币、美元等。",
+        "fields": "FCurrencyId,FNumber,FName,FSymbol,FExchangeRateType",
+        "db_tables": ("T_BD_CURRENCY",),
+    },
 
-    # 采购
-    "PUR_PurchaseOrder": {"name": "采购订单", "alias": ["采购订单", "采购单", "PO"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FTotalAmount"},
-    "PUR_ReceiveBill": {"name": "收料通知单", "alias": ["收料通知", "到货通知"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName"},
-    "PUR_MRB": {"name": "采购退料单", "alias": ["采购退料", "退货单"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName"},
+    # ══════════════════════════════════════════════════════
+    # 供应链：采购
+    # ══════════════════════════════════════════════════════
 
-    # 销售
-    "SAL_SaleOrder": {"name": "销售订单", "alias": ["销售订单", "销售单", "SO", "订单"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName,FTotalAmount"},
-    "SAL_OUTSTOCK": {"name": "销售出库单", "alias": ["销售出库", "出货单", "发货单"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName"},
-    "SAL_RETURNSTOCK": {"name": "销售退货单", "alias": ["销售退货", "退货"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName"},
+    "PUR_PurchaseOrder": {
+        "name": "采购订单",
+        "alias": ["采购订单", "采购单", "PO", "采购合同订单"],
+        "desc": (
+            "企业与供应商的采购协议，记录货物规格、价格、交货条件，是采购业务的核心单据。"
+            "与收料通知单、采购入库单、退料申请单有上下游关联关系。"
+        ),
+        # 注：FTotalAmount/FLinkQty/FBusinessClose 等字段在 demo 环境可能不存在，
+        #     如遇字段不存在错误，请用 kingdee_get_fields 确认实际可用字段
+        "fields": (
+            "FID,FBillNo,FDate,FDocumentStatus,"
+            "FSupplierId.FName,FSupplierId.FNumber,"
+            "FPurchaseDeptId.FName,FPurchaserId.FName,"
+            "FTaxAmount,FAllAmount,"
+            "FMaterialId.FName,FMaterialId.FNumber,FQty,"
+            "FReceiveQty,FStockInQty"
+        ),
+        "db_tables": ("T_PUR_PURCHASEORDER", "T_PUR_POORDERENTRY"),
+        "business_rules": {
+            "FReceiveQty": "累计收料数量（收料单审核时累加，反审核时扣减）",
+            "FStockInQty": "累计入库数量（入库单审核时累加，反审核时扣减）",
+            "FLinkQty [需启用供应链]": "关联数量 = 累计收料数量 + 累计入库数量，>=订单数量时无法下推",
+            "FBusinessClose [需启用供应链]": "业务关闭状态（A=正常 B=业务关闭）",
+            "FFreezeStatus [需启用供应链]": "冻结状态（A=正常 B=冻结）",
+            "FTerminateStatus [需启用供应链]": "终止状态（A=正常 B=终止）",
+            "FDlyCntl_Low [需启用供应链]": "交货下限，勾选控制交货数量后生效",
+            "FDlyCntl_High [需启用供应链]": "交货上限，勾选控制交货数量后生效",
+            "FCloseStatus [需启用供应链]": "整单关闭状态（A=未关闭 B=已关闭）",
+            "下推收料通知单": "单据状态=已审核 + 关闭状态=未关闭 + 业务状态=正常 + 关联数量<订单数量",
+            "下推采购入库单": "单据状态=已审核 + 关闭状态=未关闭 + 业务状态=正常 + 关联数量<订单数量 + 来料检验=未勾选",
+            "交货数量控制 [需启用供应链]": "勾选后：关联数量>=交货下限无法下推；关联数量+本次>交货上限目标单据无法保存",
+            "业务关闭条件 [需启用供应链]": "累计入库数量>=交货下限时，该行自动业务关闭；<交货下限自动反关闭",
+            "冻结/终止限制 [需启用供应链]": "冻结或终止的分录行只允许查看、反冻结/反终止、打印、引入引出",
+            "预付关联": "采购订单被付款单关联后，不可反审核",
+        },
+    },
 
-    # 库存
-    "STK_InStock": {"name": "采购入库单", "alias": ["采购入库", "入库单", "入库"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockOrgId.FName"},
-    "STK_MisDelivery": {"name": "其他出库单", "alias": ["其他出库", "杂发", "领料"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockOrgId.FName"},
-    "STK_Miscellaneous": {"name": "其他入库单", "alias": ["其他入库", "杂收"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockOrgId.FName"},
-    "STK_TransferDirect": {"name": "直接调拨单", "alias": ["调拨", "调拨单", "库存调拨"], "fields": "FID,FBillNo,FDate,FDocumentStatus"},
-    "STK_Inventory": {"name": "即时库存", "alias": ["库存", "即时库存", "库存查询"], "fields": "FMaterialId.FNumber,FMaterialId.FName,FStockId.FName,FBaseQty"},
-    "STK_StockCountInput": {"name": "盘点单", "alias": ["盘点", "盘点单", "库存盘点"], "fields": "FID,FBillNo,FDate,FDocumentStatus"},
+    "PUR_ReceiveBill": {
+        "name": "收料通知单",
+        "alias": ["收料通知", "到货通知", "收料单", "来料通知"],
+        "desc": (
+            "供应商发货到货后创建的通知单，用于来料检验和入库准备。"
+            "可直接下推采购入库单；若物料勾选来料检验，则入库必须经由收料单。"
+        ),
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FStockOrgId.FName,FInspectStatus",
+        "db_tables": ("T_PUR_RECEIVEBILL", "T_PUR_RECEIVEBILLENTRY"),
+        "business_rules": {
+            "来料检验": "物料勾选来料检验时，入库必须先收料再检验，无法直接从订单下推入库单",
+            "审核更新": "收料单审核时，累加采购订单【累计收料数量】；反审核时扣减",
+            "下推入库": "可下推采购入库单；下推时入库单日期须在最早/最晚交货时间内",
+        },
+    },
 
+    "PUR_MRB": {
+        "name": "采购退料单",
+        "alias": ["采购退料", "退货单", "来料不良退货"],
+        "desc": "供应商供货存在质量问题时，向供应商退货的单据。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FReturnReason,FReturnQty",
+        "db_tables": ("T_PUR_MRB", "T_PUR_MRBENTRY"),
+        "business_rules": {
+            "退料前提": "采购订单【检验可退数量】或【库存可退数量】>0 时才可发起退料",
+            "补料方式": "与采购订单关联的退料单【补料方式】必须为按原单补料",
+        },
+    },
+
+    "PUR_Requisition": {
+        "name": "采购申请单",
+        "alias": ["采购申请", "申购单", "请购单", "采购需求"],
+        "desc": (
+            "企业内部各需求部门发起的采购需求，是采购流程的起点。"
+            "可下推生成采购订单、采购询价单等。审核后流转至采购部门执行。"
+        ),
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FApplicantId.FName,FRequestDeptId.FName,FApplicantDeptId.FName,FTotalAmount",
+        "db_tables": ("T_PUR_REQUISITION", "T_PUR_REQUISITIONENTRY"),
+        "business_rules": {
+            "流转方向": "采购申请单 → 采购订单 或 采购询价单（RFQ）",
+            "单人审核": "同一采购员同一天只能审核一张采购申请单",
+        },
+    },
+
+    "PUR_MRAPP": {
+        "name": "退料申请单",
+        "alias": ["退料申请", "退料申请单"],
+        "desc": "库存物料需要退还给供应商时，发起的退料申请。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FReturnType,FReturnQty",
+        "db_tables": ("T_PUR_MRAPP", "T_PUR_MRAPPDISENTRY"),
+    },
+
+    "PUR_Contract": {
+        "name": "采购合同",
+        "alias": ["采购合同", "合同", "采购协议"],
+        "desc": "与供应商签订的框架采购协议，可关联具体采购订单执行。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FTotalAmount,FContractStatus",
+        "db_tables": ("T_PUR_CONTRACT",),
+    },
+
+    "PUR_PriceCategory": {
+        "name": "采购价目表",
+        "alias": ["采购价目", "采购价格", "价格资料", "供应商价格"],
+        "desc": "供应商对特定物料的定价清单，采购订单可直接引用价目表价格。",
+        "fields": "FID,FBillNo,FDocumentStatus,FSupplierId.FName,FMaterialId.FName,FPrice,FTaxPrice,FCurrencyId.FName",
+        "db_tables": ("T_PUR_PRICECATEGORY", "T_PUR_PRICECATEGORYENTRY"),
+    },
+
+    "PUR_PAT": {
+        "name": "采购调价表",
+        "alias": ["采购调价", "调价表", "价格调整"],
+        "desc": "调整采购价目表中物料价格的单据，有生效日期控制。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FMaterialId.FName,FOldPrice,FNewPrice,FEffectiveDate",
+        "db_tables": ("T_PUR_PAT", "T_PUR_PATENTRY"),
+    },
+
+    # ══════════════════════════════════════════════════════
+    # 供应链：供应商协同
+    # ══════════════════════════════════════════════════════
+
+    "SVM_InquiryBill": {
+        "name": "采购询价单",
+        "alias": ["询价单", "询价", "RFQ", "请求报价"],
+        "desc": "向供应商发起采购询价（Request for Quotation），收集报价信息。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FExpiryDate",
+        "db_tables": ("T_SVM_INQUIRYBILL", "T_SVM_INQUIRYBILLENTRY"),
+    },
+
+    "SVM_QuoteBill": {
+        "name": "供应商报价单",
+        "alias": ["报价单", "报价", "供应商报价", "报价响应"],
+        "desc": "供应商对询价单的响应，包含物料价格、货期等信息。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FMaterialId.FName,FPrice,FQuantity,FDeliveryDate",
+        "db_tables": ("T_SVM_QUOTEBILL", "T_SVM_QUOTEBILLENTRY"),
+    },
+
+    "SVM_ComparePrice": {
+        "name": "比价单",
+        "alias": ["比价", "比价单", "价格比较"],
+        "desc": "对多个供应商报价进行比价分析，辅助采购决策。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FMaterialId.FName,FSupplierId.FName,FPrice,FBestSupplier",
+        "db_tables": ("T_SVM_COMPAREPRICE",),
+    },
+
+    # ══════════════════════════════════════════════════════
+    # 供应链：销售
+    # ══════════════════════════════════════════════════════
+
+    "SAL_SaleOrder": {
+        "name": "销售订单",
+        "alias": ["销售订单", "销售单", "SO", "销售合同"],
+        "desc": (
+            "企业与客户的销售协议，记录销售货物、价格、交货条件。"
+            "可下推生成销售出库单、销售退货单、发货通知单等。"
+        ),
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName,FSalesOrgId.FName,FSalesManId.FName,FTotalAmount,FLinkQty,FStockOutQty,FDeliQty",
+        "db_tables": ("T_SAL_SALEORDER", "T_SAL_SALEORDERENTRY"),
+        "business_rules": {
+            "FLinkQty": "关联数量 = 已出库数量 + 已关联数量",
+            "FStockOutQty": "累计出库数量（销售出库单审核时累加）",
+            "FDeliQty": "累计发货数量",
+            "关闭条件": "累计出库数量 >= 订单数量时自动行关闭",
+            "冻结/终止": "冻结或终止的分录行不允许编辑和关联操作",
+        },
+    },
+
+    "SAL_OUTSTOCK": {
+        "name": "销售出库单",
+        "alias": ["销售出库", "出货单", "发货单", "销售发货"],
+        "desc": (
+            "销售订单下推或手工创建的发货单据，确认货物出库并更新库存。"
+            "审核时自动更新销售订单的累计出库数量。"
+        ),
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName,FStockOrgId.FName,FStockId.FName,FOutQty",
+        "db_tables": ("T_SAL_OUTSTOCK", "T_SAL_OUTSTOCKENTRY"),
+        "business_rules": {
+            "审核更新": "审核时累加销售订单【累计出库数量】；反审核时扣减",
+            "可发量控制": "可发量不足时无法出库（勾选控制可发量时）",
+        },
+    },
+
+    "SAL_RETURNSTOCK": {
+        "name": "销售退货单",
+        "alias": ["销售退货", "退货", "客户退货"],
+        "desc": "客户因质量问题等原因退货的单据，审核时更新原销售订单的退货数量。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName,FReturnReason,FReturnQty",
+        "db_tables": ("T_SAL_RETURNSTOCK", "T_SAL_RETURNSTOCKENTRY"),
+    },
+
+    "SAL_Quotation": {
+        "name": "销售报价单",
+        "alias": ["销售报价", "报价单", "SQ", "销售提案"],
+        "desc": "向客户提供的商品或服务价格方案，可作为销售订单的参考价格。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName,FSalesmanId.FName,FTotalAmount,FExpiryDate",
+        "db_tables": ("T_SAL_QUOTATION", "T_SAL_QUOTATIONENTRY"),
+    },
+
+    "SAL_DELIVERYNOTICE": {
+        "name": "发货通知单",
+        "alias": ["发货通知", "送货通知", "发货单"],
+        "desc": "销售出库前的发货准备单据，可下推生成销售出库单。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName,FDeliveryDate,FNoticeQty",
+        "db_tables": ("T_SAL_DELIVERYNOTICE", "T_SAL_DELIVERYNOTICEENTRY"),
+    },
+
+    "SAL_RetuenNotice": {
+        "name": "退货通知单",
+        "alias": ["退货通知", "退货单", "客户退货通知"],
+        "desc": "客户退货时的通知单，可下推生成销售退货单。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName,FReturnReason,FReturnQty",
+        "db_tables": ("T_SAL_RETURNNOTICE", "T_SAL_RETURNNOTICEENTRY"),
+    },
+
+    "SAL_AvailableQuery": {
+        "name": "可发量查询",
+        "alias": ["可发量", "可用量", "可用库存", "库存可用量"],
+        "desc": "查询物料在指定仓库的可用库存数量（可发量 = 即时库存 - 已分配量）。",
+        "fields": "FMaterialId.FNumber,FMaterialId.FName,FStockId.FName,FAvailableQty,FUnitId.FName",
+        "db_tables": ("V_SAL_AVAILABLEQTY",),
+    },
+
+    # ══════════════════════════════════════════════════════
+    # 供应链：库存
+    # ══════════════════════════════════════════════════════
+
+    "STK_InStock": {
+        "name": "采购入库单",
+        "alias": ["采购入库", "入库单", "入库", "来货入库"],
+        "desc": (
+            "物料实际验收入库的单据。来料检验的物料须先收料检验，合格后再入库；"
+            "不需检验的物料可直接从采购订单下推入库。"
+            "审核时累加采购订单【累计入库数量】。"
+        ),
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockOrgId.FName,FStockId.FName,FMaterialId.FName,FInQty,FSupplierId.FName",
+        "db_tables": ("T_STK_INSTOCK", "T_STK_INSTOCKENTRY"),
+        "business_rules": {
+            "审核更新": "入库单审核时累加采购订单【累计入库数量】；反审核时扣减",
+            "交货数量控制": "勾选控制交货数量时，入库数量不能超过采购订单【交货上限】",
+            "交货时间控制": "入库日期须在采购订单【最早/最晚交货时间】之间",
+        },
+    },
+
+    "STK_MisDelivery": {
+        "name": "其他出库单",
+        "alias": ["其他出库", "杂发", "领料", "生产领料"],
+        "desc": "除销售出库外的物料出库单据，如生产领料、样品领用等。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockOrgId.FName,FStockId.FName,FOutQty,FReason",
+        "db_tables": ("T_STK_MISDELIVERY", "T_STK_MISDELIVERYENTRY"),
+    },
+
+    "STK_Miscellaneous": {
+        "name": "其他入库单",
+        "alias": ["其他入库", "杂收", "盘盈入库"],
+        "desc": "除采购入库外的物料入库单据，如盘盈入库、样品入库等。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockOrgId.FName,FStockId.FName,FInQty,FReason",
+        "db_tables": ("T_STK_MISCELLANEOUS", "T_STK_MISCELLANEOUSENTRY"),
+    },
+
+    "STK_TransferDirect": {
+        "name": "直接调拨单",
+        "alias": ["调拨", "调拨单", "库存调拨", "仓库调拨"],
+        "desc": "仓库之间的物料调拨，单据审核后直接更新即时库存。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockOutId.FName,FStockInId.FName,FMaterialId.FName,FTransferQty",
+        "db_tables": ("T_STK_TRANSFERDIRECT", "T_STK_TRANSFERDIRECTENTRY"),
+    },
+
+    "STK_Inventory": {
+        "name": "即时库存",
+        "alias": ["库存", "即时库存", "库存查询", "现存量"],
+        "desc": "物料在各仓库的实时库存数量，是出入库业务的结果。",
+        "fields": "FMaterialId.FNumber,FMaterialId.FName,FStockId.FName,FStockLocId.FName,FBaseQty,FUnitId.FName",
+        "db_tables": ("T_STK_INVENTORY",),
+        "business_rules": {
+            "库存冻结": "冻结的库存行不允许出库",
+            "批次管理": "有批号的物料出库须指定批号",
+        },
+    },
+
+    "STK_StockCountInput": {
+        "name": "盘点单",
+        "alias": ["盘点", "盘点单", "库存盘点", "盘点"],
+        "desc": "定期或不定期对仓库物料进行清点，差异生成其他出入库单据。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockId.FName,FInspectorId.FName,FStockTakeStatus",
+        "db_tables": ("T_STK_STKCOUNTINPUT", "T_STK_STKCOUNTINPUTENTRY"),
+    },
+
+    "STK_TransferApply": {
+        "name": "调拨申请单",
+        "alias": ["调拨申请", "调拨单申请"],
+        "desc": "申请仓库之间物料调拨，审核后下推生成调拨单。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FSendStockId.FName,FReceiveStockId.FName,FMaterialId.FName,FApplyQty",
+        "db_tables": ("T_STK_TRANSFERAPPLY", "T_STK_TRANSFERAPPLYENTRY"),
+    },
+
+    "STK_TRANSFERIN": {
+        "name": "分布式调入单",
+        "alias": ["调入单", "调拨入库", "调拨接收"],
+        "desc": "分布式调拨模式下的调入单，由调出单下推生成。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockOrgId.FName,FStockId.FName,FInQty",
+        "db_tables": ("T_STK_TRANSFERIN", "T_STK_TRANSFERINENTRY"),
+    },
+
+    "STK_TRANSFEROUT": {
+        "name": "分布式调出单",
+        "alias": ["调出单", "调拨出库", "调拨发出"],
+        "desc": "分布式调拨模式下的调出单，审核后下推生成调入单。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockOrgId.FName,FStockId.FName,FOutQty",
+        "db_tables": ("T_STK_TRANSFEROUT", "T_STK_TRANSFEROUTENTRY"),
+    },
+
+    "STK_AssembledApp": {
+        "name": "组装拆卸单",
+        "alias": ["组装", "拆卸", "组装拆卸", "拆装"],
+        "desc": "将多个物料组装为产成品，或将产成品拆卸为原材料。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockId.FName,FAssembleType,FMaterialId.FName",
+        "db_tables": ("T_STK_ASSEMBLEAPP", "T_STK_ASSEMBLEAPPENTRY"),
+    },
+
+    "STK_OutStockApply": {
+        "name": "出库申请单",
+        "alias": ["出库申请", "领料申请"],
+        "desc": "物料需要出库时发起的申请，如生产领料申请。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockOrgId.FName,FMaterialId.FName,FApplyQty",
+        "db_tables": ("T_STK_OUTSTOCKAPPLY", "T_STK_OUTSTOCKAPPLYENTRY"),
+    },
+
+    "STK_StatusConvert": {
+        "name": "形态转换单",
+        "alias": ["形态转换", "库存状态", "状态转换"],
+        "desc": "物料在仓库内的状态变更（如合格品→不良品），仅更新库存状态不移动数量。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FStockId.FName,FMaterialId.FName,FStatusBefore,FStatusAfter,FConvertQty",
+        "db_tables": ("T_STK_STATUSCONVERT", "T_STK_STATUSCONVERTENTRY"),
+    },
+
+    # ══════════════════════════════════════════════════════
+    # 供应链：质量
+    # ══════════════════════════════════════════════════════
+
+    "QIS_InspectBill": {
+        "name": "来料检验单",
+        "alias": ["来料检验", "质检单", "质量检验", "IQC", "来料质检"],
+        "desc": (
+            "对采购物料进行质量检验，判断是否允许入库。"
+            "来料检验单须关联收料通知单生成；检验结果决定物料入合格品还是不良品库。"
+        ),
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FMaterialId.FName,FPassQty,FFailQty,FInspectResult",
+        "db_tables": ("T_QIS_INSPECTBILL", "T_QIS_INSPECTBILLENTRY"),
+        "business_rules": {
+            "检验结果": "FPassQty=合格数量，FFailQty=不合格数量",
+            "合格品入库": "合格物料下推入库单至合格品仓库",
+            "不合格处理": "不合格物料需走特采或退货流程",
+        },
+    },
+
+    # ══════════════════════════════════════════════════════
     # 财务
-    "AP_Payable": {"name": "应付单", "alias": ["应付", "应付单", "应付账款"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName"},
-    "AR_Receivable": {"name": "应收单", "alias": ["应收", "应收单", "应收账款"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName"},
+    # ══════════════════════════════════════════════════════
 
+    "AP_Payable": {
+        "name": "应付单",
+        "alias": ["应付", "应付单", "应付账款", "采购发票"],
+        "desc": "记录企业对供应商的应付账款，由采购入库单下推或手工创建。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FAmount,FCloseStatus",
+        "db_tables": ("T_AP_PAYABLE", "T_AP_PAYABLEENTRY"),
+        "business_rules": {
+            "核销": "付款单核销后，采购订单的预付金额会被占用",
+            "付款关联": "采购订单被付款单关联后，不可反审核",
+        },
+    },
+
+    "AR_Receivable": {
+        "name": "应收单",
+        "alias": ["应收", "应收单", "应收账款", "销售发票"],
+        "desc": "记录企业应收客户的款项，由销售出库单下推或手工创建。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName,FAmount,FCloseStatus",
+        "db_tables": ("T_AR_RECEIVABLE", "T_AR_RECEIVABLEENTRY"),
+    },
+
+    # ══════════════════════════════════════════════════════
     # 生产
-    "PRD_MO": {"name": "生产订单", "alias": ["生产订单", "生产单", "MO", "工单"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FMaterialId.FName,FQty"},
-    "PRD_PickMtrl": {"name": "生产领料单", "alias": ["生产领料", "领料单"], "fields": "FID,FBillNo,FDate,FDocumentStatus"},
-    "PRD_Instock": {"name": "产品入库单", "alias": ["产品入库", "完工入库"], "fields": "FID,FBillNo,FDate,FDocumentStatus"},
+    # ══════════════════════════════════════════════════════
 
+    "PRD_MO": {
+        "name": "生产订单",
+        "alias": ["生产订单", "生产单", "MO", "工单", "工单生产"],
+        "desc": (
+            "生产部门依据生产计划下达的生产任务单，关联物料清单（BOM）和工艺路线。"
+            "可下推生成生产领料单、产品入库单。"
+        ),
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FMaterialId.FName,FUnitId.FName,FQty,FStockInQty,FPickMtrlQty,FPlanStartDate,FPlanFinishDate",
+        "db_tables": ("T_PRD_MO", "T_PRD_MOENTRY"),
+        "business_rules": {
+            "FStockInQty": "累计产品入库数量（产品入库单审核时累加）",
+            "FPickMtrlQty": "累计领料数量（生产领料单审核时累加）",
+            "汇报投料": "生产汇报时投料数量累加至【累计投料数量】",
+        },
+    },
+
+    "PRD_PickMtrl": {
+        "name": "生产领料单",
+        "alias": ["生产领料", "领料单", "领料"],
+        "desc": "依据生产订单或工序汇报发起的领料单据，审核时扣减即时库存。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FMaterialId.FName,FStockId.FName,FPickQty,FMoBillNo",
+        "db_tables": ("T_PRD_PICKMTRL", "T_PRD_PICKMTRLENTRY"),
+        "business_rules": {
+            "审核扣库": "审核时扣减即时库存；反审核时回补库存",
+            "超领控制": "超领须经审批后才能继续领料",
+        },
+    },
+
+    "PRD_Instock": {
+        "name": "产品入库单",
+        "alias": ["产品入库", "完工入库", "生产入库"],
+        "desc": "生产完工的产品入库单据，审核时增加即时库存并更新生产订单。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FMaterialId.FName,FStockId.FName,FInQty,FMoBillNo",
+        "db_tables": ("T_PRD_INSTOCK", "T_PRD_INSTOCKENTRY"),
+    },
+
+    # ══════════════════════════════════════════════════════
     # 费用报销
-    "ER_ExpenseRequest": {"name": "费用申请单", "alias": ["费用申请", "申请单"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FApplicantId.FName,FTotalAmount"},
-    "ER_ExpenseReimburse": {"name": "费用报销单", "alias": ["费用报销", "报销单", "报销"], "fields": "FID,FBillNo,FDate,FDocumentStatus,FApplicantId.FName,FTotalReimAmount"},
+    # ══════════════════════════════════════════════════════
+
+    "ER_ExpenseRequest": {
+        "name": "费用申请单",
+        "alias": ["费用申请", "申请单", "事前申请"],
+        "desc": "业务发生前的事前费用申请，审核后可作为报销的依据。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FApplicantId.FName,FRequestDeptId.FName,FTotalAmount,FExpenseTypeId.FName",
+        "db_tables": ("T_ER_EXPENSEREQUEST", "T_ER_EXPENSEREQUESTENTRY"),
+    },
+
+    "ER_ExpenseReimburse": {
+        "name": "费用报销单",
+        "alias": ["费用报销", "报销单", "报销", "事后报销"],
+        "desc": "业务发生后的费用报销单据，可关联费用申请单，审核后生成付款单。",
+        "fields": "FID,FBillNo,FDate,FDocumentStatus,FApplicantId.FName,FRequestDeptId.FName,FTotalReimAmount,FExpenseTypeId.FName",
+        "db_tables": ("T_ER_EXPENSEREIMBURSE", "T_ER_EXPENSEREIMBURSEENTRY"),
+        "business_rules": {
+            "关联申请": "可关联费用申请单；无申请单的报销须走预算外审批流程",
+            "审核后付款": "审核后可下推生成付款单",
+        },
+    },
 }
 
 
@@ -115,6 +780,7 @@ async def _login() -> str:
     """登录金蝶，返回 SessionId，失败抛异常"""
     global _session_id
     payload = {"parameters": [ACCT_ID, USERNAME, APP_ID, APP_SEC, LCID]}
+    # 💡 REMEMBER: httpx 0.28+ 默认 HTTP/2，金蝶不支持，必须显式传 http1=True，否则全 502
     async with httpx.AsyncClient(timeout=30, proxy=None,
                                   transport=httpx.AsyncHTTPTransport(http1=True)) as client:
         resp = await client.post(
@@ -184,11 +850,19 @@ async def _post_raw(ep_key: str, form_id: str, model: dict,
     """
     global _session_id
 
-    if ep_key == "push":
-        # Push: data 直接放字段，不需要 Model 包装
-        data_obj: dict[str, Any] = dict(model)
+    # Push: data 直接放字段，不需要 Model 包装
+    # Submit/Audit/Unaudiot/Delete: data 里面直接是 {"Ids": ...}，不需要 Model 包装
+    # View: data 里面直接是 {"Id": ...}，不需要 Model 包装
+    # Save: 需要 Model 包装
+    # 注意：Kingdee WebAPI 中 data 字段始终是 JSON 字符串，不是对象
+    if ep_key in ("push", "submit", "audit", "unaudit", "delete", "view"):
+        data_obj = dict(model)
+        # 💡 REMEMBER: Submit/Audit/Unaudiot/Delete 的 Ids 必须是单个字符串 {"Ids":"100"}，不是数组
+        # Submit/Audit/Unaudiot/Delete: Ids 必须是单个字符串（FID），不是数组
+        if ep_key in ("submit", "audit", "unaudit", "delete") and "Ids" in data_obj:
+            ids = data_obj["Ids"]
+            data_obj["Ids"] = ids[0] if isinstance(ids, (list, tuple)) else ids
     else:
-        # Save/View/Submit/Audit/Delete: Model 是必须的
         data_obj = {"Model": model}
         if need_update_fields:
             data_obj["NeedUpDateFields"] = need_update_fields
@@ -200,32 +874,39 @@ async def _post_raw(ep_key: str, form_id: str, model: dict,
             data_obj["IsAutoSubmitAndAudit"] = "false"
             data_obj["ValidateRepeatJson"] = "false"
 
-    payload = {"formid": form_id, "data": data_obj}
-
-    async def _do_post(session: str) -> httpx.Response:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        return await client.post(
-            _url(ep_key),
-            content=body,
-            headers={
-                "Cookie": f"kdservice-sessionid={session}",
-                "Content-Type": "application/json; charset=utf-8",
-            },
-        )
+    # Kingdee WebAPI 格式（raw JSON body）：
+    #   {"formid": "...", "data": "{\"Model\":{...}}"}
+    # 💡 REMEMBER: data 字段是 JSON 字符串，只需一次 json.dumps；双重 dumps 会导致 API 报 502 或参数错误
+    # Kingdee WebAPI 格式（raw JSON body）：{"formid": "...", "data": "{\"Model\":{...}}"}
+    body_str = json.dumps({"formid": form_id, "data": json.dumps(data_obj, ensure_ascii=False)}, ensure_ascii=False)
 
     async with httpx.AsyncClient(timeout=30, proxy=None,
                                   transport=httpx.AsyncHTTPTransport(http1=True)) as client:
         if not _session_id:
             await _login()
 
-        resp = await _do_post(_session_id)
+        resp = await client.post(
+            _url(ep_key),
+            content=body_str.encode("utf-8"),
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "Cookie": f"kdservice-sessionid={_session_id}",
+            },
+        )
 
         if resp.status_code == 401 or (
             resp.status_code == 200 and
-            "会话" in resp.text or "session" in resp.text.lower()
+            ("会话" in resp.text or "session" in resp.text.lower())
         ):
             await _login()
-            resp = await _do_post(_session_id)
+            resp = await client.post(
+                _url(ep_key),
+                content=body_str.encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json; charset=utf-8",
+                    "Cookie": f"kdservice-sessionid={_session_id}",
+                },
+            )
 
         resp.raise_for_status()
         return resp.json()
@@ -236,23 +917,6 @@ def _rows(result: Any) -> list:
     if isinstance(result, list):
         return result
     return result.get("Result", result.get("data", []))
-
-
-def _err(e: Exception) -> str:
-    if isinstance(e, httpx.HTTPStatusError):
-        code = e.response.status_code
-        msgs = {
-            401: "认证失败，请检查 AppID/AppSec 配置。",
-            403: "权限不足，请确认集成用户拥有对应单据权限。",
-            404: "接口地址不存在，请检查 KINGDEE_SERVER_URL。",
-            429: "请求过于频繁，请稍后重试。",
-        }
-        return f"错误：{msgs.get(code, f'HTTP {code} - {e.response.text[:200]}')}"
-    if isinstance(e, httpx.TimeoutException):
-        return "错误：请求超时，请检查服务器连通性。"
-    if isinstance(e, RuntimeError):
-        return f"错误：{e}"
-    return f"错误：{type(e).__name__} - {e}"
 
 
 def _fmt(data: Any) -> str:
@@ -536,61 +1200,67 @@ async def kingdee_discover_metadata_candidates(params: MetadataCandidateInput) -
     Returns:
         str: form_id 与表名的候选映射列表
     """
-    # 常见 form_id → 表名前缀映射
-    # 常见 form_id → 表名映射（注意：表名前缀因金蝶版本不同可能为 T_ 或 t_，请以实际数据库为准）
-    CANDIDATE_PATTERNS = [
-        # 基础资料
-        ("BD_Material",    "T_BD_MATERIAL",    "物料"),
-        ("BD_Supplier",    "T_BD_SUPPLIER",    "供应商"),
-        ("BD_Customer",    "T_BD_CUSTOMER",    "客户"),
-        ("BD_Department",  "T_BD_DEPARTMENT",   "部门"),
-        ("BD_Empinfo",     "T_BD_EMPINFO",     "员工"),
-        ("BD_Stock",       "T_BD_STOCK",       "仓库"),
-        # 采购
-        ("PUR_PurchaseOrder", "T_PUR_PURCHASEORDER", "采购订单"),
-        # 销售
-        ("SAL_SaleOrder",  "T_SAL_SALEORDER",  "销售订单"),
-        # 库存
-        ("STK_InStock",   "T_STK_INSTOCK",   "入库单"),
-        # 应收应付
-        ("AP_Payable",     "T_AP_PAYABLE",    "应付单"),
-        ("AR_Receivable",  "T_AR_RECEIVABLE", "应收单"),
-        # 生产
-        ("PRD_MO",         "T_PRD_MO",        "生产订单"),
-    ]
+    # 从 FORM_CATALOG 中自动提取 form_id → (主表, [分录表]) 的映射
+    candidates: list[tuple[str, str, str]] = []
+    for fid, info in FORM_CATALOG.items():
+        tables = info.get("db_tables", ())
+        if tables:
+            main_table = tables[0]
+            name = info.get("name", fid)
+            candidates.append((fid, main_table, name))
 
     try:
         conn = _sql_connect()
         try:
             # 按 form_id 过滤（如指定了）
             if params.form_id:
-                candidates = [
-                    (fid, tbl, name) for fid, tbl, name in CANDIDATE_PATTERNS
+                filtered: list[tuple[str, str, str]] = [
+                    (fid, tbl, name) for fid, tbl, name in candidates
                     if params.form_id.lower() in fid.lower()
                 ]
             else:
-                candidates = CANDIDATE_PATTERNS
+                filtered = candidates
 
-            candidates = candidates[:params.limit]
+            filtered = filtered[:params.limit]
 
-            # 检查哪些表真实存在
+            # 检查哪些表真实存在（同时查询主表和分录表）
             results = []
-            for form_id, table_name, description in candidates:
+            for form_id, table_name, description in filtered:
                 rows = _sql_rows(conn, f"""
                     SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
                     WHERE TABLE_SCHEMA = '{_SQL_SCHEMA}'
                       AND TABLE_NAME = '{table_name}'
                       AND TABLE_TYPE = 'BASE TABLE'
                 """)
+                # 同时列出该表单的所有关联表
+                info = FORM_CATALOG.get(form_id, {})
+                all_tables = info.get("db_tables", ())
+                table_exists = {t: False for t in all_tables}
+                if rows:
+                    table_exists[table_name] = True
+                # 查询分录表
+                for t in all_tables[1:]:
+                    r = _sql_rows(conn, f"""
+                        SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
+                        WHERE TABLE_SCHEMA = '{_SQL_SCHEMA}'
+                          AND TABLE_NAME = '{t}'
+                          AND TABLE_TYPE = 'BASE TABLE'
+                    """)
+                    if r:
+                        table_exists[t] = True
+                exists_list = [t for t, e in table_exists.items() if e]
                 results.append({
                     "form_id": form_id,
                     "table_name": table_name,
                     "description": description,
                     "exists": len(rows) > 0,
+                    "db_tables": all_tables,
+                    "exists_tables": exists_list,
+                    "has_all_tables": set(exists_list) == set(all_tables),
                     "suggestion": (
                         f"调用 kingdee_describe_table(table_name='{table_name}') 查看表结构"
                         if rows else f"表 '{table_name}' 不存在，可能使用不同命名规则"
-                    )
+                    ),
                 })
 
             return _fmt({
@@ -598,6 +1268,7 @@ async def kingdee_discover_metadata_candidates(params: MetadataCandidateInput) -
                 "schema": _SQL_SCHEMA,
                 "database": _SQL_DATABASE,
                 "count": len(results),
+                "tip": "exists_tables=数据库中存在的表；has_all_tables=true 表示主表和分录表均存在",
                 "results": results
             })
         finally:
@@ -651,6 +1322,17 @@ class BillIdsInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     form_id: str = Field(..., description="单据类型标识")
     bill_ids: List[str] = Field(..., description="单据内码 FID 列表", min_length=1)
+
+
+class PurchaseOrderProgressInput(BaseModel):
+    """采购订单行明细/执行进度查询的输入模型。"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(
+        default="FDocumentStatus='C'",
+        description="过滤条件，默认只查已审核单据，如 \"FSupplierId.FNumber='S001'\""
+    )
+    start_row: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
 
 
 class MaterialQueryInput(BaseModel):
@@ -731,7 +1413,7 @@ async def kingdee_view_bill(params: ViewInput) -> str:
         str: JSON 格式的完整单据数据
     """
     try:
-        # View 使用 _post_raw（raw JSON body + 小写 formid）
+        # View 使用 _post_raw（raw JSON body + 小写 formid，无 Model 包装）
         result = await _post_raw("view", params.form_id, {"Id": params.bill_id})
         return _fmt(result)
     except Exception as e:
@@ -750,22 +1432,104 @@ async def kingdee_query_purchase_orders(params: QueryInput) -> str:
     - 已审核: "FDocumentStatus='C'"
     - 指定供应商: "FSupplierId.FNumber='S001'"
     - 指定日期: "FDate>='2024-01-01' and FDate<='2024-12-31'"
+    - 未关闭: "FCloseStatus='A'"
+    - 业务正常: "FBusinessClose='A'"
 
-    推荐 field_keys：
-    FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FPurchaseDeptId.FName,FTotalAmount
+    推荐 field_keys（默认已包含关键执行字段）：
+    FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FPurchaseDeptId.FName,
+    FTaxAmount,FAllAmount,FReceiveQty,FStockInQty
+
+    注：FTotalAmount/FLinkQty/FBusinessClose 等字段在 demo 环境可能不存在，
+    如需关联数量，请用 FReceiveQty + FStockInQty 代替，或用 kingdee_get_fields 确认可用字段
+
+    关联数量业务规则：
+    - 关联数量 = 累计收料数量 + 累计入库数量
+    - 关联数量 >= 订单数量时，采购订单无法下推收料单/入库单
+    - 勾选控制交货数量时，关联数量 >= 交货下限时无法下推
 
     Returns:
         str: JSON 格式的采购订单列表
     """
     try:
         fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
-            else "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FTotalAmount"
+            else (
+                "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,"
+                "FPurchaseDeptId.FName,FTaxAmount,FAllAmount,"
+                "FReceiveQty,FStockInQty"
+                # FLinkQty/FBusinessClose 在 demo 环境可能不存在，请用 kingdee_get_fields 确认
+            )
         result = await _post("query", _query_payload(
             "PUR_PurchaseOrder", fk, params.filter_string,
             params.order_string, params.start_row, params.limit
         ))
         rows = _rows(result)
         return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_purchase_order_progress",
+    annotations={"title": "查询采购订单执行进度", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_purchase_order_progress(params: PurchaseOrderProgressInput) -> str:
+    """查询采购订单行明细及执行进度（含累计收料/入库数量）。
+
+    与 kingdee_query_purchase_orders 的区别：
+    - 本工具查询【表体分录级】字段，返回每行物料的详细执行情况
+    - 默认返回已审核单据，可通过 filter_string 过滤
+
+    返回的关键字段（demo 账套实测）：
+    - FBillNo: 单据编号
+    - FMaterialId.FNumber / FMaterialId.FName: 物料编码/名称
+    - FQty: 订单数量
+    - FReceiveQty: 累计收料数量
+    - FStockInQty: 累计入库数量
+    - FPrice: 单价（不含税）
+    - FTaxPrice: 含税单价
+    - FAllAmount: 价税合计
+
+    以下字段需启用供应链模块后才存在（demo 环境可能不存在）：
+    - FLinkQty: 关联数量（=累计收料数量+累计入库数量）
+    - FBusinessClose: 业务关闭状态（A=正常，B=业务关闭）
+    - FFreezeStatus: 冻结状态（A=正常，B=冻结）
+    - FTerminateStatus: 终止状态（A=正常，B=终止）
+    - FDlyCntl_Low / FDlyCntl_High: 交货下限/上限
+
+    业务关闭规则（需启用供应链）：
+    - 累计入库数量 >= 交货下限时，该行自动【业务关闭】
+    - 累计入库数量 < 交货下限时，自动【业务反关闭】
+
+    Returns:
+        str: JSON 格式的采购订单执行进度列表
+    """
+    try:
+        # 注：FLinkQty/FBusinessClose/FFreezeStatus/FTerminateStatus/FDlyCntl_* 在 demo 环境可能不存在
+        # 如遇字段不存在错误，请用 kingdee_get_fields(form_id='PUR_PurchaseOrder') 确认
+        field_keys = (
+            "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,"
+            "FMaterialId.FNumber,FMaterialId.FName,"
+            "FQty,FReceiveQty,FStockInQty,"
+            "FPrice,FTaxPrice,FAllAmount"
+        )
+        result = await _post("query", _query_payload(
+            "PUR_PurchaseOrder", field_keys,
+            params.filter_string or "FDocumentStatus='C'",
+            "FBillNo DESC,FPOOrderEntry_LineID ASC",
+            params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({
+            "tip": (
+                "FLinkQty=关联数量（=FReceiveQty+FStockInQty），"
+                "FLinkQty>=FQty时无法下推；"
+                "累计入库数量>=交货下限时该行自动业务关闭"
+            ),
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "data": rows
+        })
     except Exception as e:
         return _err(e)
 
@@ -950,18 +1714,13 @@ async def kingdee_save_bill(params: SaveInput) -> str:
             is_delete_entry=params.is_delete_entry,
         )
 
-        # 提取新建单据的 FID 和 FBillNo
-        rs = result.get("Result", {})
-        status = rs.get("ResponseStatus", {})
-        if status.get("IsSuccess"):
-            fid = rs.get("Id") or (status.get("SuccessEntitys", [{}])[0] or {}).get("Id")
-            bill_no = rs.get("Number") or (status.get("SuccessEntitys", [{}])[0] or {}).get("Number")
-            return _fmt({
-                "Result": {"FID": fid, "FBillNo": bill_no, "ResponseStatus": status}
-            })
-        return _fmt({"Result": {"ResponseStatus": status}})
+        # 提取新建单据的 FID 和 FBillNo，使用结构化结果
+        status_data = _result_status(result, "save")
+        if status_data.get("success"):
+            status_data["tip"] = "单据已保存为草稿，需要提交+审核后才能生效"
+        return _fmt(status_data)
     except Exception as e:
-        return _err(e)
+        return _err(e, op="save")
 
 
 @mcp.tool(
@@ -972,15 +1731,20 @@ async def kingdee_save_bill(params: SaveInput) -> str:
 async def kingdee_submit_bills(params: BillIdsInput) -> str:
     """提交单据（草稿 → 待审核）。
 
+    返回结构化结果：success=true 时包含 next_action 字段，建议调用 kingdee_audit_bills 完成审核。
+
     Returns:
-        str: 提交结果
+        str: JSON，含 success / next_action / bill_ids 字段
     """
     try:
-        # Submit 使用 _post_raw（小写 formid + raw JSON body）
         result = await _post_raw("submit", params.form_id, {"Ids": params.bill_ids})
-        return _fmt(result)
+        status_data = _result_status(result, "submit")
+        if status_data.get("success"):
+            status_data["bill_ids"] = params.bill_ids
+            status_data["tip"] = "单据已提交，请在审核通过后调用 kingdee_audit_bills 审核"
+        return _fmt(status_data)
     except Exception as e:
-        return _err(e)
+        return _err(e, op="submit")
 
 
 @mcp.tool(
@@ -991,14 +1755,20 @@ async def kingdee_submit_bills(params: BillIdsInput) -> str:
 async def kingdee_audit_bills(params: BillIdsInput) -> str:
     """审核单据（待审核 → 已审核）。
 
+    返回结构化结果：success=true 时表示单据已生效，next_action=null。
+
     Returns:
-        str: 审核结果
+        str: JSON，含 success / bill_ids 字段
     """
     try:
         result = await _post_raw("audit", params.form_id, {"Ids": params.bill_ids})
-        return _fmt(result)
+        status_data = _result_status(result, "audit")
+        if status_data.get("success"):
+            status_data["bill_ids"] = params.bill_ids
+            status_data["tip"] = "单据已审核生效。如需修改，请先调用 kingdee_unaudit_bills 反审核"
+        return _fmt(status_data)
     except Exception as e:
-        return _err(e)
+        return _err(e, op="audit")
 
 
 @mcp.tool(
@@ -1007,16 +1777,22 @@ async def kingdee_audit_bills(params: BillIdsInput) -> str:
                  "idempotentHint": False, "openWorldHint": False}
 )
 async def kingdee_unaudit_bills(params: BillIdsInput) -> str:
-    """反审核单据（已审核 → 待审核）。
+    """反审核单据（已审核 → 待审核）。反审核后可重新修改和提交。
+
+    返回结构化结果：success=true 时表示单据已回到待审核状态。
 
     Returns:
-        str: 反审核结果
+        str: JSON，含 success / bill_ids 字段
     """
     try:
         result = await _post_raw("unaudit", params.form_id, {"Ids": params.bill_ids})
-        return _fmt(result)
+        status_data = _result_status(result, "unaudit")
+        if status_data.get("success"):
+            status_data["bill_ids"] = params.bill_ids
+            status_data["tip"] = "单据已反审核，可修改后重新提交+审核"
+        return _fmt(status_data)
     except Exception as e:
-        return _err(e)
+        return _err(e, op="unaudit")
 
 
 @mcp.tool(
@@ -1025,16 +1801,22 @@ async def kingdee_unaudit_bills(params: BillIdsInput) -> str:
                  "idempotentHint": False, "openWorldHint": False}
 )
 async def kingdee_delete_bills(params: BillIdsInput) -> str:
-    """删除单据（仅草稿状态可删除）。
+    """删除单据（仅草稿状态可删除，已提交/已审核的单据需先反审核）。
+
+    返回结构化结果：success=true 时表示删除成功。
 
     Returns:
-        str: 删除结果
+        str: JSON，含 success / bill_ids 字段
     """
     try:
         result = await _post_raw("delete", params.form_id, {"Ids": params.bill_ids})
-        return _fmt(result)
+        status_data = _result_status(result, "delete")
+        if status_data.get("success"):
+            status_data["bill_ids"] = params.bill_ids
+            status_data["tip"] = "单据已删除。如需恢复，请重新创建"
+        return _fmt(status_data)
     except Exception as e:
-        return _err(e)
+        return _err(e, op="delete")
 
 
 class PushDownInput(BaseModel):
@@ -1044,7 +1826,21 @@ class PushDownInput(BaseModel):
     source_bill_nos: List[str] = Field(
         ..., description="源单据编号列表（FBillNo），如 CGDD000025", min_length=1
     )
-    rule_id: str = Field(default="", description="转换规则 ID（RuleId），如 PUR_PurchaseOrder-PUR_ReceiveBill")
+    rule_id: str = Field(
+        default="",
+        description="转换规则 ID（RuleId），如 PUR_PurchaseOrder-PUR_ReceiveBill。"
+                    "未指定时由系统默认规则决定（下推失败时请尝试显式指定）"
+    )
+    enable_default_rule: bool = Field(
+        default=False,
+        description="是否启用默认转换规则。设为 true 时，Kingdee 自动使用该单据的默认下推规则，"
+                    "无需手动指定 rule_id（生产环境常用）"
+    )
+    draft_on_fail: bool = Field(
+        default=False,
+        description="保存失败时是否暂存（非必填：暂存的单据没有单据编号）。"
+                    "设为 true当下推后保存报错时，目标单据会转为暂存状态而非直接失败"
+    )
 
 
 @mcp.tool(
@@ -1061,8 +1857,25 @@ async def kingdee_push_bill(params: PushDownInput) -> str:
     - 采购订单 → 收料通知单:  form_id=PUR_PurchaseOrder, target_form_id=PUR_ReceiveBill
     - 销售订单 → 销售退货单:  form_id=SAL_SaleOrder,    target_form_id=SAL_RETURNSTOCK
 
+    转换规则说明：
+    - 默认（rule_id=空，enable_default_rule=false）：Kingdee 使用系统配置的默认转换规则
+    - enable_default_rule=true：强制启用该单据的默认下推规则，忽略 rule_id
+    - rule_id 显式指定：绕过默认规则，直接使用指定规则（下推失败时常用此方式）
+
+    采购订单下推限制（关联数量规则）：
+    - 采购订单【关联数量】>=【订单数量】时，无法下推收料单/入库单
+      （关联数量 = 累计收料数量 + 累计入库数量）
+    - 勾选【控制交货数量】时：
+      - 关联数量 >= 交货下限时，无法下推
+      - 关联数量 + 本次下推数量 > 交货上限时，目标单据无法保存
+    - 单据状态必须为"已审核"，且未关闭、业务状态为"正常"
+
+    响应包含：
+    - Result.ResponseStatus：保存结果（IsSuccess 判断整体是否成功）
+    - Result.ConvertResponseStatus：每行下推转换结果（可查看具体分录成功/失败）
+
     Returns:
-        str: JSON，含下推生成的目标单据 FID 和单据编号
+        str: JSON，含 success / bill_nos / next_action 字段（成功时包含目标单据编号）
     """
     try:
         push_data: dict[str, Any] = {
@@ -1071,10 +1884,30 @@ async def kingdee_push_bill(params: PushDownInput) -> str:
         }
         if params.rule_id:
             push_data["RuleId"] = params.rule_id
+        if params.enable_default_rule:
+            push_data["IsEnableDefaultRule"] = "true"
+        if params.draft_on_fail:
+            push_data["IsDraftWhenSaveFail"] = "true"
         result = await _post_raw("push", params.form_id, push_data)
-        return _fmt(result)
+        status_data = _result_status(result, "push")
+        # 提取生成的目标单据编号
+        rs = result.get("Result", result) if isinstance(result, dict) else {}
+        numbers = rs.get("Numbers", [])
+        ids = rs.get("Ids", [])
+        if status_data.get("success"):
+            status_data["source_bill_nos"] = params.source_bill_nos
+            status_data["target_form_id"] = params.target_form_id
+            if numbers:
+                status_data["target_bill_nos"] = numbers
+            if ids:
+                status_data["target_fids"] = ids if isinstance(ids, list) else [ids]
+            status_data["tip"] = (
+                f"已生成 {len(numbers)} 张目标单据，"
+                "请依次调用 kingdee_submit_bills + kingdee_audit_bills 完成提交和审核"
+            )
+        return _fmt(status_data)
     except Exception as e:
-        return _err(e)
+        return _err(e, op="push")
 
 
 # ─────────────────────────────────────────────
@@ -1105,37 +1938,59 @@ async def kingdee_list_forms(params: FormSearchInput) -> str:
     - 留空返回所有常用表单
 
     Returns:
-        str: JSON 格式的表单列表，含 form_id、名称、推荐字段
+        str: JSON 格式的表单列表，含 form_id、名称、描述、推荐字段、数据库表名
     """
     keyword = params.keyword.lower()
     results = []
 
     for form_id, info in FORM_CATALOG.items():
-        # 匹配名称或别名
-        if not keyword or keyword in info["name"].lower() or any(keyword in alias.lower() for alias in info["alias"]):
+        # 匹配名称、别名或描述
+        if not keyword or (
+            keyword in info["name"].lower()
+            or any(keyword in alias.lower() for alias in info["alias"])
+            or info.get("desc", "").startswith(keyword)
+        ):
             results.append({
                 "form_id": form_id,
                 "name": info["name"],
-                "keywords": info["alias"],
-                "recommended_fields": info["fields"]
+                "alias": info["alias"],
+                "desc": info.get("desc", ""),
+                "recommended_fields": info["fields"],
+                "db_tables": info.get("db_tables", ()),
+                "has_business_rules": bool(info.get("business_rules")),
             })
 
     return _fmt({
         "count": len(results),
-        "tip": "使用 form_id 调用 kingdee_query_bills 查询数据，或调用 kingdee_get_fields 获取完整字段列表",
+        "tip": (
+            "使用 form_id 调用 kingdee_query_bills 查询数据，"
+            "或调用 kingdee_get_fields 获取完整字段和业务规则"
+        ),
         "forms": results
     })
 
 
 @mcp.tool(
     name="kingdee_get_fields",
-    annotations={"title": "获取表单字段", "readOnlyHint": True, "destructiveHint": False,
+    annotations={"title": "获取表单字段及业务规则", "readOnlyHint": True, "destructiveHint": False,
                  "idempotentHint": True, "openWorldHint": False}
 )
 async def kingdee_get_fields(params: FieldQueryInput) -> str:
-    """获取指定表单的字段列表。
+    """获取指定表单的完整字段信息和业务规则。
 
-    不知道查询哪些字段时，先调用此工具。返回该表单的推荐字段和使用说明。
+    不知道查询哪些字段时，或需要了解表单的业务限制时，先调用此工具。
+
+    返回内容：
+    - recommended_fields: 推荐查询字段
+    - field_list: 字段数组
+    - db_tables: 对应数据库表名
+    - business_rules: 关键业务规则（如下推限制、状态枚举等）
+
+    字段格式说明：
+    - FXxx 是普通字段
+    - FXxx.FName 是关联字段取名称（例：FSupplierId.FName）
+    - FXxx.FNumber 是关联字段取编码（例：FSupplierId.FNumber）
+    - FXxx.fstbl_FIRSTKEYFIELDNAME 是关联字段取FID（用于保存/过滤）
 
     Returns:
         str: JSON 格式的字段信息
@@ -1147,9 +2002,22 @@ async def kingdee_get_fields(params: FieldQueryInput) -> str:
         return _fmt({
             "form_id": form_id,
             "name": info["name"],
+            "desc": info.get("desc", ""),
             "recommended_fields": info["fields"],
-            "field_list": info["fields"].split(","),
-            "tip": "字段格式说明：FXxx 是普通字段，FXxx.FName 是关联字段取名称，FXxx.FNumber 是取编码"
+            "field_list": [f.strip() for f in info["fields"].split(",")],
+            "db_tables": info.get("db_tables", ()),
+            "business_rules": info.get("business_rules", {}),
+            "单据状态枚举": {
+                "A": "创建",
+                "B": "审核中",
+                "C": "已审核",
+                "D": "重新审核",
+                "Z": "暂存",
+            },
+            "通用状态枚举": {
+                "A": "正常/未关闭",
+                "B": "已关闭/冻结/终止/业务关闭",
+            },
         })
     else:
         # 返回通用建议
@@ -1157,7 +2025,7 @@ async def kingdee_get_fields(params: FieldQueryInput) -> str:
             "form_id": form_id,
             "name": "未知表单",
             "tip": "此表单不在常用目录中，建议尝试以下通用字段：FID,FBillNo,FNumber,FName,FDate,FDocumentStatus",
-            "common_fields": ["FID", "FBillNo", "FNumber", "FName", "FDate", "FDocumentStatus", "FCreateDate", "FModifyDate"]
+            "common_fields": ["FID", "FBillNo", "FNumber", "FName", "FDate", "FDocumentStatus", "FCreateDate", "FModifyDate"],
         })
 
 
@@ -1311,34 +2179,33 @@ async def kingdee_query_workflow_status(params: WorkflowStatusInput) -> str:
                  "idempotentHint": False, "openWorldHint": False}
 )
 async def kingdee_workflow_approve(params: WorkflowActionInput) -> str:
-    """审批通过单据。
+    """审批通过或驳回单据。
 
-    对待审批的单据执行审批通过操作。
+    - approve: 审核通过（待审核 → 已审核）
+    - reject:  驳回（已审核 → 反审核回到待审核状态）
+    - 返回结构化结果，包含 success / next_action 字段
 
     Returns:
-        str: 审批结果
+        str: JSON，含 success / action / bill_id 字段
     """
     try:
         if params.action == "approve":
-            # 审核通过
-            result = await _post("audit", [params.form_id, {"Ids": params.bill_id}])
+            result = await _post_raw("audit", params.form_id, {"Ids": params.bill_id})
             action_name = "审批通过"
         elif params.action == "reject":
-            # 驳回 = 反审核
-            result = await _post("unaudit", [params.form_id, {"Ids": params.bill_id}])
+            result = await _post_raw("unaudit", params.form_id, {"Ids": params.bill_id})
             action_name = "审批驳回"
         else:
             return _fmt({"error": f"不支持的操作: {params.action}"})
 
-        return _fmt({
-            "action": action_name,
-            "form_id": params.form_id,
-            "bill_id": params.bill_id,
-            "opinion": params.opinion or "无",
-            "result": result
-        })
+        status_data = _result_status(result, "audit" if params.action == "approve" else "unaudit")
+        status_data["action"] = action_name
+        status_data["bill_id"] = params.bill_id
+        if params.opinion:
+            status_data["opinion"] = params.opinion
+        return _fmt(status_data)
     except Exception as e:
-        return _err(e)
+        return _err(e, op=params.action)
 
 
 @mcp.tool(
@@ -1378,6 +2245,214 @@ async def kingdee_query_expense_reimburse(params: QueryInput) -> str:
             "has_more": len(rows) >= params.limit,
             "data": rows
         })
+    except Exception as e:
+        return _err(e)
+
+
+# ─────────────────────────────────────────────
+# SCM 供应链工具
+# ─────────────────────────────────────────────
+
+@mcp.tool(
+    name="kingdee_query_purchase_requisitions",
+    annotations={"title": "查询采购申请单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_purchase_requisitions(params: QueryInput) -> str:
+    """查询采购申请单（PUR_Requisition）列表。
+
+    采购申请单是采购流程的起点，用于向采购部门提出物料或服务采购需求。
+    申请单可下推生成采购订单、采购询价单等。
+
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定申请人: "FApplicantId.FNumber='EMP001'"
+    - 指定申请部门: "FRequestDeptId.FNumber='D001'"
+
+    推荐 field_keys：
+    FID,FBillNo,FDate,FDocumentStatus,FApplicantId.FName,FRequestDeptId.FName,FTotalAmount
+
+    Returns:
+        str: JSON 格式的采购申请单列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FID,FBillNo,FDate,FDocumentStatus,FApplicantId.FName,FRequestDeptId.FName"
+        result = await _post("query", _query_payload(
+            "PUR_Requisition", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_sale_quotations",
+    annotations={"title": "查询销售报价单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_sale_quotations(params: QueryInput) -> str:
+    """查询销售报价单（SAL_Quotation）列表。
+
+    销售报价单是向客户提供的商品或服务价格方案，可作为销售订单的参考或直接下推为销售订单。
+
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定客户: "FCustId.FNumber='C001'"
+
+    推荐 field_keys：
+    FID,FBillNo,FDate,FDocumentStatus,FCustId.FName,FSalesmanId.FName,FTotalAmount
+
+    Returns:
+        str: JSON 格式的销售报价单列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName,FTotalAmount"
+        result = await _post("query", _query_payload(
+            "SAL_Quotation", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_quality_inspections",
+    annotations={"title": "查询来料检验单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_quality_inspections(params: QueryInput) -> str:
+    """查洵来料检验单（QIS_InspectBill/IQC）列表。
+
+    来料检验单用于对采购物料进行质量检验，判断是否允许入库。
+
+    常用 filter_string：
+    - 已检验: "FDocumentStatus='C'"
+    - 检验结果-合格: "FResult='1'" 或 "FPassQty>0"
+    - 检验结果-不合格: "FFailQty>0"
+
+    推荐 field_keys：
+    FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FMaterialId.FName,FPassQty,FFailQty,FInspectTypeId.FName
+
+    Returns:
+        str: JSON 格式的来料检验单列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FMaterialId.FName,FPassQty,FFailQty"
+        result = await _post("query", _query_payload(
+            "QIS_InspectBill", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_stock_transfer_apply",
+    annotations={"title": "查询调拨申请单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_stock_transfer_apply(params: QueryInput) -> str:
+    """查询调拨申请单（STK_TransferApply）列表。
+
+    调拨申请单用于申请仓库之间物料的转移，经审核后可下推生成调拨单。
+
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定调出仓库: "FSendStockId.FNumber='WH01'"
+    - 指定调入仓库: "FReceiveStockId.FNumber='WH02'"
+
+    推荐 field_keys：
+    FID,FBillNo,FDate,FDocumentStatus,FSendStockId.FName,FReceiveStockId.FName
+
+    Returns:
+        str: JSON 格式的调拨申请单列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FID,FBillNo,FDate,FDocumentStatus,FSendStockId.FName,FReceiveStockId.FName"
+        result = await _post("query", _query_payload(
+            "STK_TransferApply", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_purchase_inquiry",
+    annotations={"title": "查询采购询价单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_purchase_inquiry(params: QueryInput) -> str:
+    """查洵采购询价单（SVM_InquiryBill/RFQ）列表。
+
+    采购询价单（Request for Quotation）用于向供应商询价，收集报价信息。
+
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定供应商: "FSupplierId.FNumber='S001'"
+
+    推荐 field_keys：
+    FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FMaterialId.FName,FPrice
+
+    Returns:
+        str: JSON 格式的询价单列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName"
+        result = await _post("query", _query_payload(
+            "SVM_InquiryBill", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_supplier_quotes",
+    annotations={"title": "查询供应商报价单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_supplier_quotes(params: QueryInput) -> str:
+    """查洵供应商报价单（SVM_QuoteBill）列表。
+
+    供应商报价单是供应商对询价单的响应，包含物料价格信息。
+    可用于比价分析，选择最优供应商。
+
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定供应商: "FSupplierId.FNumber='S001'"
+    - 指定物料: "FMaterialId.FNumber='MAT001'"
+
+    推荐 field_keys：
+    FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FMaterialId.FName,FPrice,FQuantity
+
+    Returns:
+        str: JSON 格式的报价单列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FID,FBillNo,FDate,FDocumentStatus,FSupplierId.FName,FMaterialId.FName,FPrice"
+        result = await _post("query", _query_payload(
+            "SVM_QuoteBill", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
     except Exception as e:
         return _err(e)
 
@@ -1430,10 +2505,17 @@ def prompt_create_purchase_order() -> list[UserMessage]:
 
 @mcp.resource("kingdee://forms", mime_type="application/json")
 def resource_form_catalog() -> str:
-    """金蝶常用表单目录，包含 form_id、中文名称和推荐查询字段"""
+    """金蝶常用表单目录，包含 form_id、中文名称、描述和推荐查询字段"""
     return json.dumps(
-        [{"form_id": k, "name": v["name"], "alias": v["alias"], "recommended_fields": v["fields"]}
-         for k, v in FORM_CATALOG.items()],
+        [{
+            "form_id": k,
+            "name": v["name"],
+            "alias": v["alias"],
+            "desc": v.get("desc", ""),
+            "recommended_fields": v["fields"],
+            "db_tables": v.get("db_tables", ()),
+            "has_business_rules": bool(v.get("business_rules")),
+        } for k, v in FORM_CATALOG.items()],
         ensure_ascii=False, indent=2
     )
 
@@ -1444,14 +2526,25 @@ def resource_help() -> str:
     return """金蝶 MCP Server 使用指南
 ====================
 
-## 查询类操作（只读）
-- kingdee_query_bills        通用单据查询
-- kingdee_query_purchase_orders  查询采购订单
-- kingdee_query_sale_orders      查询销售订单
-- kingdee_query_stock_bills      查询出入库单
-- kingdee_query_inventory        查询即时库存
-- kingdee_query_materials        查询物料档案
-- kingdee_query_partners         查询客户/供应商
+## 供应链（SCM）查询
+- kingdee_query_purchase_orders          查询采购订单列表（默认含关联数量/累计入库）
+- kingdee_query_purchase_order_progress 查询采购订单执行进度（表体分录级）
+- kingdee_query_purchase_requisitions    查询采购申请单
+- kingdee_query_purchase_inquiry         查询采购询价单（RFQ）
+- kingdee_query_supplier_quotes          查询供应商报价单
+- kingdee_query_sale_orders              查询销售订单
+- kingdee_query_sale_quotations          查询销售报价单
+- kingdee_query_stock_bills              查询出入库单
+- kingdee_query_stock_transfer_apply     查询调拨申请单
+- kingdee_query_inventory                查询即时库存
+- kingdee_query_quality_inspections     查询来料检验单（IQC）
+
+## 基础资料查询
+- kingdee_query_materials    查询物料档案
+- kingdee_query_partners     查询客户/供应商
+
+## 通用查询
+- kingdee_query_bills        通用单据查询（任意 form_id）
 
 ## 写操作（会修改 ERP 数据）
 - kingdee_save_bill      新建或修改单据
@@ -1459,16 +2552,48 @@ def resource_help() -> str:
 - kingdee_audit_bills    审核单据
 - kingdee_unaudit_bills  反审核单据
 - kingdee_delete_bills   删除单据
-- kingdee_push_bill      下推单据
+- kingdee_push_bill      下推单据（采购订单→收料通知单/入库单；销售订单→出库单）
+
+## 采购订单核心业务规则
+- 关联数量 = 累计收料数量 + 累计入库数量
+- 关联数量 >= 订单数量 → 无法下推收料单/入库单
+- 勾选控制交货数量 → 关联数量 >= 交货下限无法下推，超交货上限无法保存
+- 累计入库数量 >= 交货下限 → 该行自动业务关闭
+- 冻结/终止的分录行不允许编辑和关联操作
+- 采购订单被付款单关联后，不可反审核
+
+## 销售订单核心业务规则
+- 累计出库数量 >= 订单数量 → 该行自动业务关闭
+- 冻结/终止的分录行不允许编辑和关联操作
+
+## 采购入库单核心业务规则
+- 入库单审核时累加采购订单【累计入库数量】；反审核时扣减
+- 勾选控制交货数量时，入库数量不能超过采购订单【交货上限】
+
+## 来料检验核心业务规则
+- 物料勾选来料检验时，必须先收料检验合格后再入库
+- 合格物料下推入库单至合格品仓库；不合格物料走特采或退货流程
+
+## 单据状态枚举
+- A=创建 B=审核中 C=已审核 D=重新审核 Z=暂存
+- 业务状态 A=正常 B=业务关闭/冻结/终止
 
 ## 元数据
 - kingdee_list_forms   搜索可用表单（不知道 form_id 时先用这个）
-- kingdee_get_fields   获取表单字段列表
+- kingdee_get_fields  获取表单字段列表及业务规则
+
+## SQL 数据库探查
+- kingdee_discover_tables            搜索表名
+- kingdee_discover_columns            搜索列名
+- kingdee_describe_table              查看表结构
+- kingdee_discover_metadata_candidates 查看 form_id 对应的数据库表
 
 ## 常用 filter_string 示例
 - 已审核: FDocumentStatus='C'
 - 指定日期: FDate>='2024-01-01' and FDate<='2024-12-31'
 - 模糊搜索: FName like '%关键词%'
+- 未关闭: FCloseStatus='A'
+- 业务正常: FBusinessClose='A'
 """
 
 

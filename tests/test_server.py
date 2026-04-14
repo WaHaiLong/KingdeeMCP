@@ -119,14 +119,20 @@ class TestMetadataTools:
         # 应返回所有 FORM_CATALOG 中的表单
         assert parsed["count"] > 0
         assert len(parsed["forms"]) == parsed["count"]
+        # 验证新增字段
+        first_form = parsed["forms"][0]
+        assert "alias" in first_form
+        assert "desc" in first_form
+        assert "db_tables" in first_form
+        assert "has_business_rules" in first_form
 
     def test_kingdee_list_forms_filter_by_keyword(self):
         result = asyncio.run(kingdee_list_forms(FormSearchInput(keyword="采购")))
         parsed = json.loads(result)
         for form in parsed["forms"]:
             name_lower = form["name"].lower()
-            keywords_lower = [k.lower() for k in form["keywords"]]
-            assert "采购" in name_lower or any("采购" in k for k in keywords_lower)
+            alias_lower = [a.lower() for a in form["alias"]]
+            assert "采购" in name_lower or any("采购" in a for a in alias_lower)
 
     def test_kingdee_get_fields_known_form(self):
         result = asyncio.run(kingdee_get_fields(FieldQueryInput(form_id="BD_Material")))
@@ -134,6 +140,9 @@ class TestMetadataTools:
         assert parsed["form_id"] == "BD_Material"
         assert parsed["name"] == "物料"
         assert "recommended_fields" in parsed
+        assert "db_tables" in parsed
+        assert "business_rules" in parsed
+        assert "单据状态枚举" in parsed
 
     def test_kingdee_get_fields_unknown_form(self):
         result = asyncio.run(kingdee_get_fields(FieldQueryInput(form_id="UNKNOWN_FORM")))

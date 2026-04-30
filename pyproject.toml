@@ -30,6 +30,12 @@ dependencies = [
     "pyodbc>=5.0.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/WaHaiLong/KingdeeMCP"
 Repository = "https://github.com/WaHaiLong/KingdeeMCP"
@@ -44,3 +50,6 @@ packages = ["src/kingdee_mcp"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "e2e: 真实金蝶环境的端到端测试（需 KINGDEE_* 环境变量）",
+]

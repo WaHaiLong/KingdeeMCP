@@ -35,7 +35,26 @@ KNOWN_ERROR_PATTERNS: List[tuple[str, str, str]] = [
     ("权限",       "集成用户没有对应单据的操作权限",                   "联系金蝶管理员开通权限"),
     ("字段不存在", "字段在当前账套/模块中未启用",                      "用 kingdee_get_fields 确认可用字段，或改用替代字段"),
     ("保存失败",   "下推或保存失败，详情见 ConvertResponseStatus",     "检查 ConvertResponseStatus 每行错误原因"),
+    # 状态/并发/校验类（高频）
+    ("已被其他用户修改", "乐观锁冲突，单据被并发修改",                "重新调用 kingdee_view_bill 拉最新数据再 Save"),
+    ("已存在",     "唯一键冲突 (FBillNo / FNumber 重复)",              "检查是否重复 Save，或换一个编码"),
+    ("不能为空",   "必录字段缺失",                                     "用 kingdee_get_fields 查必录项后补齐 model"),
+    ("已审核",     "单据已审核，不允许再次提交/审核",                 "用 kingdee_unaudit_bills 反审核后再操作"),
+    ("非草稿",     "单据非草稿状态，不允许 Submit",                   "确认单据状态后再决定下一步"),
+    ("基础资料",   "外键引用不存在 (物料/客户/供应商/部门)",          "用 kingdee_query_materials / kingdee_query_partners 验证 FNumber"),
 ]
+
+# next-action 元数据：与 KNOWN_ERROR_PATTERNS 平行，命中 pattern 时给出建议工具
+# 不并入 tuple 是为了保持 add_known_pattern() 三参公共签名向后兼容
+KNOWN_ERROR_NEXT_ACTIONS: dict[str, dict] = {
+    "字段不存在":       {"tool": "kingdee_get_fields",                          "args_hint": "form_id"},
+    "不能为空":         {"tool": "kingdee_get_fields",                          "args_hint": "form_id"},
+    "已被其他用户修改": {"tool": "kingdee_view_bill",                           "args_hint": "form_id, bill_id"},
+    "关联数量":         {"tool": "kingdee_query_purchase_order_progress",       "args_hint": "源单 FBillNo"},
+    "基础资料":         {"tool": "kingdee_query_materials | kingdee_query_partners", "args_hint": "FNumber"},
+    "已审核":           {"tool": "kingdee_unaudit_bills",                       "args_hint": "form_id, bill_ids"},
+    "已存在":           {"tool": "kingdee_query_bills",                         "args_hint": "form_id, FBillNo / FNumber"},
+}
 
 # 单据操作生命周期状态机（约束层）
 # 状态流转: 创建 → 提交 → 审核 → ... → 反审核(撤销)
@@ -50,37 +69,66 @@ DOC_LIFECYCLE: dict[str, dict] = {
     "push":    {"from": "源单",   "to": "目标单草稿", "success": True, "next_action": "submit+audit", "next_action_desc": "目标单已生成，请依次调用 kingdee_submit_bills + kingdee_audit_bills"},
 }
 
-def _parse_kingdee_errors(result: Any) -> dict:
-    """从 Kingdee API 响应中提取业务错误（反馈层核心函数）"""
+def _match_known_pattern(message: str) -> Optional[dict]:
+    """对单条错误消息做 KNOWN_ERROR_PATTERNS 匹配，命中则返回结构化建议。
+
+    返回形如 {"reason", "suggestion", "next_action_tool"?, "next_action_args_hint"?}。
+    未命中返回 None。
+    """
+    if not message:
+        return None
+    msg_lower = message.lower()
+    for pattern, reason, suggestion in KNOWN_ERROR_PATTERNS:
+        if pattern.lower() in msg_lower:
+            matched: dict = {"reason": reason, "suggestion": suggestion}
+            na = KNOWN_ERROR_NEXT_ACTIONS.get(pattern)
+            if na:
+                matched["next_action_tool"] = na["tool"]
+                matched["next_action_args_hint"] = na["args_hint"]
+            return matched
+    return None
+
+
+def _parse_kingdee_errors(result: Any) -> list:
+    """从 Kingdee API 响应中提取业务错误（反馈层核心函数）。
+
+    返回 errors 列表，每项含 message/detail/field/matched；
+    push 的 ConvertResponseStatus 逐行也会走同一套模式匹配。
+    """
     errors = []
+    seen: set = set()  # dedup key: (row|None, message)
     try:
         rs = result.get("Result", result) if isinstance(result, dict) else {}
         status = rs.get("ResponseStatus", {})
         if isinstance(status, dict) and not status.get("IsSuccess", True):
             for err in status.get("Errors", []):
                 msg = err.get("Message", "")
-                # 匹配已知错误模式，返回 structured feedback
-                matched = None
-                for pattern, reason, suggestion in KNOWN_ERROR_PATTERNS:
-                    if pattern.lower() in msg.lower():
-                        matched = {"reason": reason, "suggestion": suggestion}
-                        break
+                key = (None, msg)
+                if key in seen:
+                    continue
+                seen.add(key)
                 errors.append({
                     "message": msg,
                     "detail": err.get("Dsc", ""),
                     "field": err.get("FieldName", ""),
-                    "matched": matched,
+                    "matched": _match_known_pattern(msg),
                 })
-        # Push 操作特有的 ConvertResponseStatus
+        # Push 操作特有的 ConvertResponseStatus —— 逐行也走 pattern 匹配
         conv = rs.get("ConvertResponseStatus", [])
         if conv:
             for i, c in enumerate(conv):
                 if not c.get("IsSuccess", True):
+                    msg = c.get("Message", "转换失败")
+                    key = (i, msg)
+                    if key in seen:
+                        continue
+                    seen.add(key)
                     errors.append({
                         "type": "convert",
                         "row": i,
-                        "message": c.get("Message", "转换失败"),
+                        "message": msg,
                         "detail": c.get("Description", ""),
+                        "matched": _match_known_pattern(msg),
                     })
     except Exception:
         pass
@@ -132,26 +180,33 @@ def _result_status(result: Any, op: str) -> dict:
     return out
 
 
-def add_known_pattern(pattern: str, reason: str, suggestion: str) -> None:
+def add_known_pattern(
+    pattern: str,
+    reason: str,
+    suggestion: str,
+    next_action_tool: Optional[str] = None,
+    next_action_args_hint: Optional[str] = None,
+) -> None:
     """向已知错误模式库追加新模式（记忆层核心函数）。
 
     用法示例：
-        # 当 AI 遇到新错误时，可在代码中追加：
         add_known_pattern("特定错误关键词", "原因说明", "建议操作")
-        # 下次遇到同类错误时，系统会自动给出 reason 和 suggestion
+        add_known_pattern("字段A", "原因", "建议",
+                          next_action_tool="kingdee_get_fields",
+                          next_action_args_hint="form_id")
 
-    适用场景：
-    - 测试中发现新的金蝶业务错误
-    - 集成测试遇到之前未记录的错误模式
-    - 生产环境发现新的错误关键词
-
-    注意：追加后建议同步更新 extract_remember.py 或手动维护记忆文件。
+    next-action 元数据可选；若提供，命中此 pattern 的错误会在 matched 中携带
+    next_action_tool / next_action_args_hint，方便 AI 自助恢复。
     """
     global KNOWN_ERROR_PATTERNS
-    # 防重
     existing = [p[0] for p in KNOWN_ERROR_PATTERNS]
     if pattern not in existing:
         KNOWN_ERROR_PATTERNS.append((pattern, reason, suggestion))
+    if next_action_tool:
+        KNOWN_ERROR_NEXT_ACTIONS[pattern] = {
+            "tool": next_action_tool,
+            "args_hint": next_action_args_hint or "",
+        }
 
 
 def _err(e: Exception, extra_errors: list = None, op: str = "") -> str:
@@ -175,11 +230,9 @@ def _err(e: Exception, extra_errors: list = None, op: str = "") -> str:
         }
         raw = e.response.text[:300].strip()
         err_item = {"type": "http", "code": code, "message": msgs.get(code, f"HTTP {code}"), "raw": raw}
-        # 匹配已知错误模式
-        for pattern, reason, suggestion in KNOWN_ERROR_PATTERNS:
-            if pattern in raw:
-                err_item["matched"] = {"reason": reason, "suggestion": suggestion}
-                break
+        matched = _match_known_pattern(raw)
+        if matched:
+            err_item["matched"] = matched
         extra.append(err_item)
     elif isinstance(e, httpx.TimeoutException):
         extra.append({"type": "timeout", "message": "请求超时，请检查服务器连通性"})
@@ -829,7 +882,7 @@ async def _post(ep_key: str, payload: Any) -> Any:
         # session 过期则重新登录重试一次
         if resp.status_code == 401 or (
             resp.status_code == 200 and
-            "会话" in resp.text or "session" in resp.text.lower()
+            ("会话" in resp.text or "session" in resp.text.lower())
         ):
             await _login()
             resp = await _do_post(_session_id)
@@ -1911,6 +1964,327 @@ async def kingdee_push_bill(params: PushDownInput) -> str:
 
 
 # ─────────────────────────────────────────────
+# 复合工作流工具（高层）：避免 AI 漏掉中间步骤导致的目标漂移
+# ─────────────────────────────────────────────
+
+class CreateAndAuditInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(..., description="单据类型，如 SAL_SaleOrder、PUR_PurchaseOrder")
+    model: dict = Field(..., description="单据字段（同 kingdee_save_bill 的 model）")
+    need_update_fields: List[str] = Field(default_factory=list, description="修改时需更新的字段名")
+    is_delete_entry: bool = Field(default=True, description="保存时是否清空原分录")
+
+
+class PushAndAuditInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(..., description="源单据类型，如 PUR_PurchaseOrder")
+    target_form_id: str = Field(..., description="目标单据类型，如 STK_InStock")
+    source_bill_nos: List[str] = Field(..., min_length=1, description="源单 FBillNo 列表")
+    rule_id: str = Field(default="", description="转换规则 ID，demo 环境通常必填")
+    enable_default_rule: bool = Field(default=False, description="启用默认下推规则（生产环境常用）")
+    draft_on_fail: bool = Field(default=False, description="保存失败时目标单暂存（暂存的单无单据编号）")
+    auto_submit_audit: bool = Field(
+        default=True,
+        description="为 false 时只下推不审核，目标单留为草稿。需要在 push 后做人工校验时关闭。",
+    )
+
+
+def _step_failed_status(result: Any, op: str) -> dict:
+    """run a _post_raw 已返回 result 后，检查是否业务失败，构造步骤记录。"""
+    return _result_status(result, op)
+
+
+@mcp.tool(
+    name="kingdee_create_and_audit",
+    annotations={"title": "创建并审核单据（一站式）", "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False}
+)
+async def kingdee_create_and_audit(params: CreateAndAuditInput) -> str:
+    """一次性走完 Save → Submit → Audit 三步，避免 AI 漏掉中间步骤。
+
+    任意一步失败即停止（不自动重试），返回 halted_at 和 recovery_hint 告诉 AI
+    从哪里手动接手。失败日志按整体 op="create_and_audit" 记录一次（不会三倍膨胀）。
+
+    适用场景：明确要"一条龙"创建并使单据生效，没有中间审批/校验需求。
+    需要中间步骤校验时，请改用手工链路 kingdee_save_bill → kingdee_submit_bills → kingdee_audit_bills。
+
+    Returns:
+        str: JSON。成功：success=true、halted_at=null、steps 三条均 success。
+             失败：success=false、halted_at 指出卡点、recovery_hint 给出下一步建议。
+    """
+    steps: list[dict] = []
+    out: dict[str, Any] = {"op": "create_and_audit", "success": False, "halted_at": None, "steps": steps}
+
+    # Step 1: Save
+    try:
+        model = dict(params.model)
+        model.setdefault("FID", 0)
+        save_result = await _post_raw(
+            "save",
+            params.form_id,
+            model,
+            need_update_fields=params.need_update_fields,
+            need_return_fields=["FID", "FBillNo"],
+            is_delete_entry=params.is_delete_entry,
+        )
+    except Exception as e:
+        steps.append({"op": "save", "success": False, "exception": f"{type(e).__name__}: {e}"})
+        out["halted_at"] = "save"
+        out["recovery_hint"] = "Save 抛异常未生成草稿，无需清理。修正 model 后重试 kingdee_create_and_audit 或调用 kingdee_save_bill。"
+        return _err(e, extra_errors=[{"step": "save", "stage_summary": out}], op="create_and_audit")
+
+    save_status = _result_status(save_result, "save")
+    fid = save_status.get("fid")
+    bill_no = save_status.get("bill_no")
+    step_save = {"op": "save", "success": save_status.get("success", False)}
+    if fid:
+        step_save["fid"] = fid
+        out["fid"] = fid
+    if bill_no:
+        step_save["bill_no"] = bill_no
+        out["bill_no"] = bill_no
+    if not save_status.get("success"):
+        step_save["errors"] = save_status.get("errors", [])
+        steps.append(step_save)
+        out["halted_at"] = "save"
+        out["errors"] = save_status.get("errors", [])
+        out["recovery_hint"] = "Save 失败：检查 errors[].matched.suggestion；修正 model 后重试。"
+        # 失败日志只在 composite 层记一次
+        try:
+            from scripts.failure_log import FailureLogger
+            FailureLogger().log("create_and_audit", out)
+        except Exception:
+            pass
+        return _fmt(out)
+    steps.append(step_save)
+
+    # Step 2: Submit
+    try:
+        submit_result = await _post_raw("submit", params.form_id, {"Ids": str(fid)})
+    except Exception as e:
+        steps.append({"op": "submit", "success": False, "exception": f"{type(e).__name__}: {e}"})
+        out["halted_at"] = "submit"
+        out["recovery_hint"] = (
+            f"草稿已生成 (fid={fid}, bill_no={bill_no})。Submit 抛异常。"
+            f"可手动调用 kingdee_submit_bills(form_id=\"{params.form_id}\", bill_ids=[\"{fid}\"]) 重试，"
+            f"或先 kingdee_delete_bills 清理草稿。"
+        )
+        return _err(e, extra_errors=[{"step": "submit", "stage_summary": out}], op="create_and_audit")
+
+    submit_status = _result_status(submit_result, "submit")
+    step_submit = {"op": "submit", "success": submit_status.get("success", False)}
+    if not submit_status.get("success"):
+        step_submit["errors"] = submit_status.get("errors", [])
+        steps.append(step_submit)
+        out["halted_at"] = "submit"
+        out["errors"] = submit_status.get("errors", [])
+        out["recovery_hint"] = (
+            f"草稿已生成 (fid={fid})。Submit 失败：检查 errors[].matched.suggestion。"
+            f"修正后调用 kingdee_submit_bills(form_id=\"{params.form_id}\", bill_ids=[\"{fid}\"]) 重试。"
+        )
+        try:
+            from scripts.failure_log import FailureLogger
+            FailureLogger().log("create_and_audit", out)
+        except Exception:
+            pass
+        return _fmt(out)
+    steps.append(step_submit)
+
+    # Step 3: Audit
+    try:
+        audit_result = await _post_raw("audit", params.form_id, {"Ids": str(fid)})
+    except Exception as e:
+        steps.append({"op": "audit", "success": False, "exception": f"{type(e).__name__}: {e}"})
+        out["halted_at"] = "audit"
+        out["recovery_hint"] = (
+            f"已 Save+Submit (fid={fid})。Audit 抛异常。"
+            f"可手动调用 kingdee_audit_bills(form_id=\"{params.form_id}\", bill_ids=[\"{fid}\"]) 重试。"
+        )
+        return _err(e, extra_errors=[{"step": "audit", "stage_summary": out}], op="create_and_audit")
+
+    audit_status = _result_status(audit_result, "audit")
+    step_audit = {"op": "audit", "success": audit_status.get("success", False)}
+    if not audit_status.get("success"):
+        step_audit["errors"] = audit_status.get("errors", [])
+        steps.append(step_audit)
+        out["halted_at"] = "audit"
+        out["errors"] = audit_status.get("errors", [])
+        out["recovery_hint"] = (
+            f"已 Save+Submit (fid={fid})。Audit 失败（典型原因：必录字段未补、关联数据缺失）："
+            f"检查 errors[].matched.suggestion；修正后调用 kingdee_audit_bills 重试。"
+        )
+        try:
+            from scripts.failure_log import FailureLogger
+            FailureLogger().log("create_and_audit", out)
+        except Exception:
+            pass
+        return _fmt(out)
+    steps.append(step_audit)
+
+    out["success"] = True
+    out["next_action"] = None
+    out["tip"] = "工作流完成，单据已审核生效。如需修改，请先 kingdee_unaudit_bills 反审核。"
+    return _fmt(out)
+
+
+@mcp.tool(
+    name="kingdee_push_and_audit",
+    annotations={"title": "下推并审核目标单（一站式）", "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False}
+)
+async def kingdee_push_and_audit(params: PushAndAuditInput) -> str:
+    """一次性走完 Push → (可选 Submit + Audit) 全流程。
+
+    Push 生成的目标单默认是草稿；本工具自动批量提交+审核所有生成的目标单 FID。
+    任何一步失败即停止；失败日志按整体 op="push_and_audit" 记录一次。
+
+    auto_submit_audit=False 时退化为纯 push（与 kingdee_push_bill 等价，但返回 steps 结构）。
+
+    Returns:
+        str: JSON。含 steps、target_bill_nos、target_fids、halted_at / recovery_hint。
+    """
+    steps: list[dict] = []
+    out: dict[str, Any] = {
+        "op": "push_and_audit", "success": False, "halted_at": None, "steps": steps,
+        "source_bill_nos": params.source_bill_nos, "target_form_id": params.target_form_id,
+    }
+
+    # Step 1: Push
+    push_data: dict[str, Any] = {
+        "TargetFormId": params.target_form_id,
+        "Numbers": params.source_bill_nos,
+    }
+    if params.rule_id:
+        push_data["RuleId"] = params.rule_id
+    if params.enable_default_rule:
+        push_data["IsEnableDefaultRule"] = "true"
+    if params.draft_on_fail:
+        push_data["IsDraftWhenSaveFail"] = "true"
+
+    try:
+        push_result = await _post_raw("push", params.form_id, push_data)
+    except Exception as e:
+        steps.append({"op": "push", "success": False, "exception": f"{type(e).__name__}: {e}"})
+        out["halted_at"] = "push"
+        out["recovery_hint"] = "Push 抛异常，未生成目标单。检查源单状态/转换规则/连通性后重试。"
+        return _err(e, extra_errors=[{"step": "push", "stage_summary": out}], op="push_and_audit")
+
+    push_status = _result_status(push_result, "push")
+    rs = push_result.get("Result", push_result) if isinstance(push_result, dict) else {}
+    target_bill_nos = rs.get("Numbers", []) or []
+    target_fids_raw = rs.get("Ids", []) or []
+    target_fids = [str(x) for x in (target_fids_raw if isinstance(target_fids_raw, list) else [target_fids_raw])]
+
+    step_push: dict[str, Any] = {"op": "push", "success": push_status.get("success", False)}
+    if target_bill_nos:
+        step_push["target_bill_nos"] = target_bill_nos
+        out["target_bill_nos"] = target_bill_nos
+    if target_fids:
+        step_push["target_fids"] = target_fids
+        out["target_fids"] = target_fids
+    if not push_status.get("success"):
+        step_push["errors"] = push_status.get("errors", [])
+        steps.append(step_push)
+        out["halted_at"] = "push"
+        out["errors"] = push_status.get("errors", [])
+        out["recovery_hint"] = (
+            "Push 失败：检查 errors[].matched.suggestion；常见原因——关联数量已达上限、"
+            "转换规则不匹配、源单未审核。"
+        )
+        try:
+            from scripts.failure_log import FailureLogger
+            FailureLogger().log("push_and_audit", out)
+        except Exception:
+            pass
+        return _fmt(out)
+    steps.append(step_push)
+
+    # 不需要后续 submit+audit
+    if not params.auto_submit_audit:
+        out["success"] = True
+        out["tip"] = (
+            f"已生成 {len(target_bill_nos)} 张目标草稿单。auto_submit_audit=False，"
+            "请按需手动 kingdee_submit_bills + kingdee_audit_bills。"
+        )
+        out["next_action"] = "submit+audit"
+        return _fmt(out)
+
+    if not target_fids:
+        out["halted_at"] = "submit"
+        out["recovery_hint"] = "Push 成功但未返回目标 FID，无法自动 Submit。请用 target_bill_nos 反查 FID。"
+        out["errors"] = [{"message": "Push response missing Ids"}]
+        return _fmt(out)
+
+    # Step 2: Submit (batch)
+    try:
+        submit_result = await _post_raw("submit", params.target_form_id, {"Ids": target_fids})
+    except Exception as e:
+        steps.append({"op": "submit", "success": False, "exception": f"{type(e).__name__}: {e}"})
+        out["halted_at"] = "submit"
+        out["recovery_hint"] = (
+            f"已下推目标草稿 fids={target_fids}。Submit 抛异常。"
+            f"手动 kingdee_submit_bills(form_id=\"{params.target_form_id}\", bill_ids={target_fids}) 重试。"
+        )
+        return _err(e, extra_errors=[{"step": "submit", "stage_summary": out}], op="push_and_audit")
+
+    submit_status = _result_status(submit_result, "submit")
+    step_submit = {"op": "submit", "success": submit_status.get("success", False)}
+    if not submit_status.get("success"):
+        step_submit["errors"] = submit_status.get("errors", [])
+        steps.append(step_submit)
+        out["halted_at"] = "submit"
+        out["errors"] = submit_status.get("errors", [])
+        out["recovery_hint"] = (
+            f"目标草稿已生成 fids={target_fids}。Submit 失败：检查 errors[].matched.suggestion。"
+        )
+        try:
+            from scripts.failure_log import FailureLogger
+            FailureLogger().log("push_and_audit", out)
+        except Exception:
+            pass
+        return _fmt(out)
+    steps.append(step_submit)
+
+    # Step 3: Audit (batch)
+    try:
+        audit_result = await _post_raw("audit", params.target_form_id, {"Ids": target_fids})
+    except Exception as e:
+        steps.append({"op": "audit", "success": False, "exception": f"{type(e).__name__}: {e}"})
+        out["halted_at"] = "audit"
+        out["recovery_hint"] = (
+            f"已 Push+Submit 目标单 fids={target_fids}。Audit 抛异常。"
+            f"手动 kingdee_audit_bills(form_id=\"{params.target_form_id}\", bill_ids={target_fids}) 重试。"
+        )
+        return _err(e, extra_errors=[{"step": "audit", "stage_summary": out}], op="push_and_audit")
+
+    audit_status = _result_status(audit_result, "audit")
+    step_audit = {"op": "audit", "success": audit_status.get("success", False)}
+    if not audit_status.get("success"):
+        step_audit["errors"] = audit_status.get("errors", [])
+        steps.append(step_audit)
+        out["halted_at"] = "audit"
+        out["errors"] = audit_status.get("errors", [])
+        out["recovery_hint"] = (
+            f"已 Push+Submit 目标单 fids={target_fids}。Audit 失败：检查 errors[].matched.suggestion；"
+            f"修正后调用 kingdee_audit_bills 重试。"
+        )
+        try:
+            from scripts.failure_log import FailureLogger
+            FailureLogger().log("push_and_audit", out)
+        except Exception:
+            pass
+        return _fmt(out)
+    steps.append(step_audit)
+
+    out["success"] = True
+    out["next_action"] = None
+    out["tip"] = (
+        f"工作流完成：已下推并审核 {len(target_fids)} 张目标单 ({params.target_form_id})。"
+    )
+    return _fmt(out)
+
+
+# ─────────────────────────────────────────────
 # 元数据查询工具
 # ─────────────────────────────────────────────
 
@@ -2600,8 +2974,48 @@ def resource_help() -> str:
 # ─────────────────────────────────────────────
 # 入口函数
 # ─────────────────────────────────────────────
+def _run_check() -> int:
+    """跑一次登录验证当前环境变量配置是否正确，返回 exit code"""
+    import asyncio
+
+    required = {
+        "KINGDEE_SERVER_URL": SERVER_URL,
+        "KINGDEE_ACCT_ID":    ACCT_ID,
+        "KINGDEE_USERNAME":   USERNAME,
+        "KINGDEE_APP_ID":     APP_ID,
+        "KINGDEE_APP_SEC":    APP_SEC,
+    }
+    missing = [k for k, v in required.items() if not v or v == "http://your-server/k3cloud/"]
+    if missing:
+        print("[FAIL] 缺少环境变量: " + ", ".join(missing))
+        return 1
+
+    print(f"[INFO] 服务器: {SERVER_URL}")
+    print(f"[INFO] 账套: {ACCT_ID}  用户: {USERNAME}  AppID: {APP_ID[:8]}...")
+    print("[INFO] 正在尝试登录金蝶...")
+    try:
+        sid = asyncio.run(_login())
+        print(f"[OK] 登录成功，SessionId: {sid[:12]}...")
+        print("[OK] 配置正确，可在 MCP 客户端中使用。")
+        return 0
+    except httpx.HTTPError as e:
+        print(f"[FAIL] 网络错误: {e}")
+        print("       请检查 KINGDEE_SERVER_URL 是否可访问、是否含 /k3cloud/ 后缀。")
+        return 2
+    except RuntimeError as e:
+        print(f"[FAIL] {e}")
+        print("       请检查 ACCT_ID / USERNAME / APP_ID / APP_SEC 是否正确，集成用户是否启用。")
+        return 3
+    except Exception as e:
+        print(f"[FAIL] 未知错误: {type(e).__name__}: {e}")
+        return 4
+
+
 def main():
     """MCP Server 入口点"""
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] in ("--check", "check"):
+        sys.exit(_run_check())
     mcp.run()
 
 

@@ -15,6 +15,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from kingdee_mcp.server import (
     _query_payload, _rows, _err, _fmt,
+    _match_known_pattern, _parse_kingdee_errors, add_known_pattern,
+    KNOWN_ERROR_NEXT_ACTIONS,
     QueryInput, ViewInput, SaveInput, BillIdsInput,
     MaterialQueryInput, PartnerQueryInput, InventoryQueryInput,
     FormSearchInput, FieldQueryInput,
@@ -150,3 +152,95 @@ class TestMetadataTools:
         assert parsed["form_id"] == "UNKNOWN_FORM"
         assert parsed["name"] == "未知表单"
         assert "common_fields" in parsed
+
+
+# ─── 错误模式匹配 + next-action ───────────────────────────────
+
+class TestErrorPatternMatching:
+    def test_match_known_pattern_returns_none_for_unmatched(self):
+        assert _match_known_pattern("totally novel error") is None
+
+    def test_match_known_pattern_returns_reason_and_suggestion(self):
+        m = _match_known_pattern("分录行已冻结，不允许编辑")
+        assert m is not None
+        assert "冻结" in m["reason"] or "冻结" in m["suggestion"]
+
+    def test_match_known_pattern_includes_next_action_when_registered(self):
+        m = _match_known_pattern("FQty 字段不存在于本账套")
+        assert m is not None
+        assert m["next_action_tool"] == "kingdee_get_fields"
+        assert m["next_action_args_hint"] == "form_id"
+
+    def test_match_known_pattern_no_next_action_for_simple_match(self):
+        # 业务关闭 没有注册 next-action，只有 reason/suggestion
+        m = _match_known_pattern("该行已业务关闭")
+        assert m is not None
+        assert "next_action_tool" not in m
+
+    def test_parse_errors_top_level_response_status(self):
+        result = {
+            "Result": {
+                "ResponseStatus": {
+                    "IsSuccess": False,
+                    "Errors": [{"Message": "FCustId 不能为空", "FieldName": "FCustId"}],
+                }
+            }
+        }
+        errors = _parse_kingdee_errors(result)
+        assert len(errors) == 1
+        assert errors[0]["matched"]["next_action_tool"] == "kingdee_get_fields"
+        assert errors[0]["field"] == "FCustId"
+
+    def test_parse_errors_convert_response_status_gets_matched(self):
+        # push 逐行失败必须也走 pattern 匹配（这是改动的核心）
+        result = {
+            "Result": {
+                "ResponseStatus": {"IsSuccess": True},
+                "ConvertResponseStatus": [
+                    {"IsSuccess": False, "Message": "源单关联数量已达上限", "Description": "row 0"},
+                    {"IsSuccess": True},
+                ],
+            }
+        }
+        errors = _parse_kingdee_errors(result)
+        assert len(errors) == 1
+        assert errors[0]["type"] == "convert"
+        assert errors[0]["row"] == 0
+        assert errors[0]["matched"] is not None
+        assert errors[0]["matched"]["next_action_tool"] == "kingdee_query_purchase_order_progress"
+
+    def test_parse_errors_dedupes_repeat_message(self):
+        # 顶层 + convert 中的同一条 message 不应重复出现
+        result = {
+            "Result": {
+                "ResponseStatus": {
+                    "IsSuccess": False,
+                    "Errors": [{"Message": "已审核单据，不允许操作"}],
+                },
+                "ConvertResponseStatus": [
+                    {"IsSuccess": False, "Message": "其他错误"},
+                ],
+            }
+        }
+        errors = _parse_kingdee_errors(result)
+        # 顶层 1 条 + convert 1 条（不同 message） = 2 条
+        assert len(errors) == 2
+
+    def test_add_known_pattern_with_next_action(self):
+        add_known_pattern(
+            "测试新模式xyz",
+            "test reason",
+            "test suggestion",
+            next_action_tool="kingdee_view_bill",
+            next_action_args_hint="form_id, bill_id",
+        )
+        m = _match_known_pattern("出现了 测试新模式xyz")
+        assert m is not None
+        assert m["next_action_tool"] == "kingdee_view_bill"
+
+    def test_add_known_pattern_three_arg_still_works(self):
+        # 向后兼容：三参签名继续可用
+        add_known_pattern("旧式三参pattern", "reason", "suggestion")
+        m = _match_known_pattern("出现了 旧式三参pattern")
+        assert m is not None
+        assert "next_action_tool" not in m

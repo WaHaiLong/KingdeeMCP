@@ -34,6 +34,10 @@ KINGDEE_ACCT_ID=... KINGDEE_USERNAME=... \
 KINGDEE_APP_ID=... KINGDEE_APP_SEC=... \
 KINGDEE_LCID=2052 \
 python -m pytest tests/test_integration.py -v
+
+# End-to-end workflow tests (requires real Kingdee env, same vars as above)
+# Auto-skipped when KINGDEE_* env vars are absent — never commit credentials in source.
+python -m pytest tests/e2e -v -m e2e
 ```
 
 ## Architecture

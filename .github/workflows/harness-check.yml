@@ -5,10 +5,10 @@ on:
     paths:
       - 'src/**/*.py'
       - 'harness/**'
+      - 'tests/**/*.py'
+      - 'pyproject.toml'
+      - '.github/workflows/harness-check.yml'
   pull_request:
-    paths:
-      - 'src/**/*.py'
-      - 'harness/**'
 
 jobs:
   lint:
@@ -22,7 +22,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -e .
+        run: pip install -e ".[test]"
 
       - name: Run harness rules check (dry-run with sample)
         run: |

@@ -16,7 +16,28 @@ Save(草稿) → Submit(待审核) → Audit(已审核)
 
 ---
 
-## 写操作完整流程（无目标漂移版）
+## 高层工具优先（一站式复合）
+
+无需中间校验时，**优先调用复合工具**，可避免漏掉 Submit/Audit 造成的目标漂移：
+
+| 场景 | 高层工具 | 等价手工链路 |
+|------|----------|---------------|
+| 新建并审核 | `kingdee_create_and_audit` | save → submit → audit |
+| 下推并审核 | `kingdee_push_and_audit` | push → submit → audit |
+
+**halt-on-failure 语义**：任意一步失败立即停止，返回 `halted_at` 和 `recovery_hint` 告诉 AI 该手动调哪个工具续接。**不会自动重试**，因为业务错误（关联数量已达上限、业务关闭等）需要人工判断而非机械重试。
+
+**何时退回手工链路**：需要在中间步骤（Save 后、Submit 后）做自定义校验、逐张人工 review、或针对失败做特殊清理时。
+
+```
+# 推荐：一次调用走完
+kingdee_create_and_audit(form_id, model)            → success=true, halted_at=null
+kingdee_push_and_audit(form_id, source_bill_nos, ...) → 目标单已审核生效
+```
+
+---
+
+## 写操作完整流程（手工链路 / 需细粒度控制时）
 
 ### 新建单据（采购订单/销售订单）
 ```
@@ -103,5 +124,29 @@ Save(草稿) → Submit(待审核) → Audit(已审核)
 | 删除 | `kingdee_delete_bills` | 草稿→已删除 |
 | 下推 | `kingdee_push_bill` | 源单→目标单草稿 |
 | 查看 | `kingdee_view_bill` | 只读，无状态变化 |
+| **新建并审核** | `kingdee_create_and_audit` | → 已审核（一站式） |
+| **下推并审核** | `kingdee_push_and_audit` | 源单→目标单已审核（一站式） |
 
-> 参考：`src/kingdee_mcp/server.py` 中 `DOC_LIFECYCLE` 和 `KNOWN_ERROR_PATTERNS`
+> 参考：`src/kingdee_mcp/server.py` 中 `DOC_LIFECYCLE`、`KNOWN_ERROR_PATTERNS`、`KNOWN_ERROR_NEXT_ACTIONS`
+
+---
+
+## 错误响应中的 `matched.next_action_tool`
+
+错误若命中 `KNOWN_ERROR_PATTERNS`，会在 `errors[].matched` 中携带建议工具：
+
+```json
+{
+  "errors": [{
+    "message": "FCustId 不能为空",
+    "matched": {
+      "reason": "必录字段缺失",
+      "suggestion": "用 kingdee_get_fields 查必录项后补齐 model",
+      "next_action_tool": "kingdee_get_fields",
+      "next_action_args_hint": "form_id"
+    }
+  }]
+}
+```
+
+AI 收到错误后应优先按 `next_action_tool` 调用，而非自行猜测下一步。`add_known_pattern()` 支持以可选参数注册新模式的 next-action 元数据（运行时追加，重启后失效）。

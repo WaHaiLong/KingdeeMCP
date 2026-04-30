@@ -4802,6 +4802,110 @@ async def kingdee_push_production_stock_in(params: ProductionStockInPushInput) -
 
 
 # ─────────────────────────────────────────────
+# 计划管理 + 生产汇报
+# ─────────────────────────────────────────────
+
+class MRPResultQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(default="", description="过滤条件，如 FMaterialId.FNumber='123'")
+    top: int = Field(default=200, description="返回条数限制")
+    orderby: str = Field(default="FCreateDate DESC", description="排序字段")
+
+
+@mcp.tool(
+    name="kingdee_query_mrp_result",
+    annotations={"title": "MRP运算结果查询", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False}
+)
+async def kingdee_query_mrp_result(params: MRPResultQueryInput) -> str:
+    """查询 MRP 运算结果（PLAN_MRPResult）。
+
+    来自销售订单/销售预测/库存不足等需求，经 MRP 运算生成的计划订单建议。
+    可下推生成采购申请/生产订单。
+
+    Returns:
+        str: JSON 数组，每条含 FBillNo/FMaterialId/FSrcBillNo/FPurchaseQty 等字段。
+    """
+    try:
+        result = await _post("query", "PLAN_MRPResult", [
+            "PLAN_MRPResult",
+            params.filter_string,
+            params.top,
+            params.orderby,
+            "FDetailId,FPlanQty,FBillNo,FMaterialId,FUnitId,FPlanDate,FSupplyMrpRuleId,FMrpResultId,FIsExploit,FMoBillNo,FMoEntryId,FPOBillNo,FPOEntryId,FPRBillNo,FPREntryId,FSupplyRuleId,FSourceBillType,FSrcBillId,FSrcBillNo,FSrcBillEntryId,FSupplyRuleId,FSupplyDate,FSupplyOrgId,FSupplyOrgName,FCurrentSupState,FRequireOrgId,FRequireOrgName,FRequireDeptId,FCreatorId,FCreateDate,FModifierId,FModifyDate,FDocumentStatus,FDescription,Fmrpresultentry_l,F_RTV1_TEXT,F_RTV2_TEXT,F_RTV3_TEXT,F_RTV4_DEC,F_RTV5_DEC",
+        ])
+        return _fmt(result)
+    except Exception as e:
+        return _err(e, op="query")
+
+
+class ProductionPlanQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(default="", description="过滤条件")
+    top: int = Field(default=200, description="返回条数限制")
+    orderby: str = Field(default="FCreateDate DESC", description="排序字段")
+
+
+@mcp.tool(
+    name="kingdee_query_production_plan",
+    annotations={"title": "生产计划单查询", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False}
+)
+async def kingdee_query_production_plan(params: ProductionPlanQueryInput) -> str:
+    """查询生产计划单（PLAN_ProductionPlan）。
+
+    生产计划单是 MRP 运算后手工调整的计划单据，可直接下推生成生产订单。
+
+    Returns:
+        str: JSON 数组。
+    """
+    try:
+        result = await _post("query", "PLAN_ProductionPlan", [
+            "PLAN_ProductionPlan",
+            params.filter_string,
+            params.top,
+            params.orderby,
+            "FBillNo,FMaterialId,FPlanQty,FPlanStartDate,FPlanEndDate,FStatus,FWorkShopId,FDocumentStatus",
+        ])
+        return _fmt(result)
+    except Exception as e:
+        return _err(e, op="query")
+
+
+class ProductionReportQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(default="", description="过滤条件，如 FMaterialId.FNumber='123'")
+    top: int = Field(default=200, description="返回条数限制")
+    orderby: str = Field(default="FCreateDate DESC", description="排序字段")
+
+
+@mcp.tool(
+    name="kingdee_query_production_report",
+    annotations={"title": "生产汇报单查询", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False}
+)
+async def kingdee_query_production_report(params: ProductionReportQueryInput) -> str:
+    """查询生产汇报单（PRD_MOReport）。
+
+    生产汇报记录工序完成数量/工时/良品率等信息，是生产入库的提前工序。
+
+    Returns:
+        str: JSON 数组，含 FBillNo/FMOId/FMaterialId/FReportQty/FHourQty 等。
+    """
+    try:
+        result = await _post("query", "PRD_MOReport", [
+            "PRD_MOReport",
+            params.filter_string,
+            params.top,
+            params.orderby,
+            "FBillNo,FMOId,FMOBillNo,FMaterialId,FMaterialName,FReportQty,FUnitId,FFinishedQty,FScrapQty,FHourQty,FWorkStationId,FWorkGroupId,FProcessId,FDocumentStatus,FCreateDate",
+        ])
+        return _fmt(result)
+    except Exception as e:
+        return _err(e, op="query")
+
+
+# ─────────────────────────────────────────────
 # 入口函数
 # ─────────────────────────────────────────────
 def _run_check() -> int:

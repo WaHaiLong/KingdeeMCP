@@ -294,6 +294,12 @@ _EP = {
     "unaudit": "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.UnAudit.common.kdsvc",
     "delete":  "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.Delete.common.kdsvc",
     "push":    "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.Push.common.kdsvc",
+    "user":         "Kingdee.BOS.WebApi.ServicesStub.UserService.QueryUser.common.kdsvc",
+    "role":         "Kingdee.BOS.WebApi.ServicesStub.RoleService.QueryRole.common.kdsvc",
+    "permission":   "Kingdee.BOS.WebApi.ServicesStub.PermissionService.QueryPermission.common.kdsvc",
+    "sequence":     "Kingdee.BOS.WebApi.ServicesStub.SequenceRuleService.QuerySequenceRule.common.kdsvc",
+    "number_rule":   "Kingdee.BOS.WebApi.ServicesStub.NumberRuleService.QueryNumberRule.common.kdsvc",
+    "sysconfig":    "Kingdee.BOS.WebApi.ServicesStub.SystemConfigService.QuerySystemConfig.common.kdsvc",
 }
 
 # Session 缓存（避免每次请求都重新登录）
@@ -2285,6 +2291,223 @@ async def kingdee_push_and_audit(params: PushAndAuditInput) -> str:
 
 
 # ─────────────────────────────────────────────
+# 系统设置工具：用户/角色/权限/编码规则/系统配置查询
+# ─────────────────────────────────────────────
+
+class UserQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(default="", description="过滤条件，如 \"FUserID.FNumber='admin'\"")
+    field_keys: str = Field(default="FUserID,FName,FNumber,FDepartment.FName,FIsActive", description="返回字段")
+    start_row: int = Field(default=0, ge=0, description="分页起始行")
+    limit: int = Field(default=20, ge=1, le=100, description="每页条数")
+
+
+class RoleQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(default="", description="过滤条件")
+    field_keys: str = Field(default="FRoleID,FName,FNumber,FIsActive", description="返回字段")
+    start_row: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class PermissionQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(default="", description="过滤条件，如 \"FRoleId.FNumber='ROLE001'\"")
+    field_keys: str = Field(default="FPermissionId,FName,FNumber,FObjectType", description="返回字段")
+    start_row: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class SequenceQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(default="", description="过滤条件")
+    field_keys: str = Field(default="FSequenceRuleId,FName,FNumber,FObjectType,FDescription", description="返回字段")
+    start_row: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class NumberRuleQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(default="", description="过滤条件，如 \"FObjectType='SAL_SaleOrder'\"")
+    field_keys: str = Field(default="FNumberRuleId,FName,FNumber,FObjectType,FPrefix,FSequenceLength", description="返回字段")
+    start_row: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class SystemConfigInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(default="", description="过滤条件，如 \"FConfigKey='MaxUploadSize'\"")
+    field_keys: str = Field(default="FConfigId,FConfigKey,FConfigValue,FDescription,FCategory", description="返回字段")
+    start_row: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+def _system_query_payload(form_id: str, field_keys: str, filter_string: str, start_row: int, limit: int) -> list:
+    return [form_id, {"FieldKeys": field_keys, "FilterString": filter_string, "StartRow": start_row, "Limit": limit}]
+
+
+def _post_system(ep_key: str, form_id: str, field_keys: str, filter_string: str, start_row: int, limit: int) -> Any:
+    return _post(ep_key, _system_query_payload(form_id, field_keys, filter_string, start_row, limit))
+
+
+@mcp.tool(
+    name="kingdee_query_user",
+    annotations={"title": "查询用户", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_user(params: UserQueryInput) -> str:
+    """查询金蝶系统中的用户列表。
+
+    常用 filter_string：
+    - 指定用户名: "FUserID.FNumber='user001'"
+    - 在岗状态: "FIsActive=1"
+    - 指定部门: "FDepartment.FNumber='D001'"
+
+    推荐 field_keys：
+    FUserID,FName,FNumber,FDepartment.FName,FIsActive,FCreateDate
+
+    Returns:
+        str: JSON 格式的用户列表
+    """
+    try:
+        result = await _post_system("user", "BD_User", params.field_keys, params.filter_string, params.start_row, params.limit)
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_role",
+    annotations={"title": "查询角色", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_role(params: RoleQueryInput) -> str:
+    """查询金蝶系统中的角色列表。
+
+    常用 filter_string：
+    - 指定角色名: "FRoleID.FNumber='admin'"
+    - 启用状态: "FIsActive=1"
+
+    推荐 field_keys：
+    FRoleID,FName,FNumber,FIsActive,FCreateDate,FDescription
+
+    Returns:
+        str: JSON 格式的角色列表
+    """
+    try:
+        result = await _post_system("role", "BD_Role", params.field_keys, params.filter_string, params.start_row, params.limit)
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_permission",
+    annotations={"title": "查询权限", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_permission(params: PermissionQueryInput) -> str:
+    """查询金蝶系统中的权限列表。
+
+    常用 filter_string：
+    - 指定角色: "FRoleId.FNumber='ROLE001'"
+    - 指定对象类型: "FObjectType='BD_Material'"
+
+    推荐 field_keys：
+    FPermissionId,FName,FNumber,FObjectType,FObjectName,FIsAllow
+
+    Returns:
+        str: JSON 格式的权限列表
+    """
+    try:
+        result = await _post_system("permission", "SYS_Permission", params.field_keys, params.filter_string, params.start_row, params.limit)
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_sequence",
+    annotations={"title": "查询编码规则", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_sequence(params: SequenceQueryInput) -> str:
+    """查询金蝶系统中的编码规则（SequenceRule）列表。
+
+    常用 filter_string：
+    - 指定单据类型: "FObjectType='PUR_PurchaseOrder'"
+    - 指定编码规则: "FSequenceRuleId.FNumber='SEQ001'"
+
+    推荐 field_keys：
+    FSequenceRuleId,FName,FNumber,FObjectType,FDescription,FIsActive
+
+    Returns:
+        str: JSON 格式的编码规则列表
+    """
+    try:
+        result = await _post_system("sequence", "SYS_SequenceRule", params.field_keys, params.filter_string, params.start_row, params.limit)
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_number_rule",
+    annotations={"title": "查询单据编号规则", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_number_rule(params: NumberRuleQueryInput) -> str:
+    """查询金蝶系统中的单据编号规则列表。
+
+    常用 filter_string：
+    - 指定单据类型: "FObjectType='SAL_SaleOrder'"
+    - 指定规则名: "FNumberRuleId.FNumber='NR001'"
+
+    推荐 field_keys：
+    FNumberRuleId,FName,FNumber,FObjectType,FPrefix,FSequenceLength,FDateFormat
+
+    Returns:
+        str: JSON 格式的单据编号规则列表
+    """
+    try:
+        result = await _post_system("number_rule", "SYS_NumberRule", params.field_keys, params.filter_string, params.start_row, params.limit)
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_system_config",
+    annotations={"title": "查询系统配置", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_system_config(params: SystemConfigInput) -> str:
+    """查询金蝶系统中的系统配置参数。
+
+    常用 filter_string：
+    - 指定配置项: "FConfigKey='MaxUploadSize'"
+    - 指定分类: "FCategory='System'"
+
+    推荐 field_keys：
+    FConfigId,FConfigKey,FConfigValue,FDescription,FCategory,FIsActive
+
+    Returns:
+        str: JSON 格式的系统配置列表
+    """
+    try:
+        result = await _post_system("sysconfig", "SYS_SystemConfig", params.field_keys, params.filter_string, params.start_row, params.limit)
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+# ─────────────────────────────────────────────
 # 元数据查询工具
 # ─────────────────────────────────────────────
 
@@ -2624,6 +2847,119 @@ async def kingdee_query_expense_reimburse(params: QueryInput) -> str:
 
 
 # ─────────────────────────────────────────────
+# 资产管理工具
+# ─────────────────────────────────────────────
+
+@mcp.tool(name="kingdee_query_fixed_asset", annotations={"title": "查询固定资产", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+async def kingdee_query_fixed_asset(params: QueryInput) -> str:
+    """查询固定资产卡片主数据（FA_FAGet / BD_MainData，formId: FA）。
+    固定资产是企业长期使用的有形资产，如房屋、机器设备、运输工具等。
+    支持按资产编号、名称、状态、使用部门等条件筛选。
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定资产编号: "FNumber='FA001'"
+    - 指定使用部门: "FUseDeptId.FNumber='D001'"
+    - 在用资产: "FStatus='USING'"
+    推荐 field_keys：
+    FID,FNumber,FName,FAssetSource,FSpecification,FUsedPeriod,FOriginalAmount,FDepreciateRate,FUseDeptId.FName,FDocumentStatus,FStatus
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" else "FID,FNumber,FName,FAssetSource,FSpecification,FUsedPeriod,FOriginalAmount,FDepreciateRate,FUseDeptId.FName,FDocumentStatus,FStatus"
+        result = await _post("query", _query_payload("FA_FAGet", fk, params.filter_string, params.order_string, params.start_row, params.limit))
+        return _fmt({"form_id": "FA_FAGet", "count": len(_rows(result)), "data": _rows(result)})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(name="kingdee_query_asset_card", annotations={"title": "查询资产卡片", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+async def kingdee_query_asset_card(params: QueryInput) -> str:
+    """查询资产卡片（FA_FAGet 或子单据）。
+    资产卡片是固定资产的详细记录，包含原值、累计折旧、净值、卡片状态等信息。
+    常用 filter_string：
+    - 指定资产编号: "FNumber='FA001'"
+    - 指定保管人: "FCustodian.FNumber='EMP001'"
+    - 已计提折旧: "FTotalDepreciate>0"
+    推荐 field_keys：
+    FID,FNumber,FName,FAssetSource,FOriginalAmount,FTotalDepreciate,FNetAmount,FDepreciateMonth,FUsefulLife,FSalvageValue,FCustodian.FName
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" else "FID,FNumber,FName,FAssetSource,FOriginalAmount,FTotalDepreciate,FNetAmount,FDepreciateMonth,FUsefulLife,FSalvageValue,FCustodian.FName"
+        result = await _post("query", _query_payload("FA_FAGet", fk, params.filter_string, params.order_string, params.start_row, params.limit))
+        return _fmt({"form_id": "FA_FAGet", "count": len(_rows(result)), "data": _rows(result)})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(name="kingdee_query_asset_depreciation", annotations={"title": "查询资产折旧记录", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+async def kingdee_query_asset_depreciation(params: QueryInput) -> str:
+    """查询资产折旧记录（FA_DepreciationBill）。
+    折旧记录是固定资产计提折旧的明细，反映每月折旧费用、累计折旧、净值变化。
+    常用 filter_string：
+    - 指定期间: "FYear=2024 and FPeriod=3"
+    - 指定资产: "FAssetId.FNumber='FA001'"
+    推荐 field_keys：
+    FID,FYear,FPeriod,FAssetId.FNumber,FAssetId.FName,FDepreciateDeptId.FName,FDepreciateAmount,FOriginalAmount,FTotalDepreciate,FNetAmount
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" else "FID,FYear,FPeriod,FAssetId.FNumber,FAssetId.FName,FDepreciateDeptId.FName,FDepreciateAmount,FOriginalAmount,FTotalDepreciate,FNetAmount"
+        result = await _post("query", _query_payload("FA_DepreciationBill", fk, params.filter_string, params.order_string, params.start_row, params.limit))
+        return _fmt({"form_id": "FA_DepreciationBill", "count": len(_rows(result)), "data": _rows(result)})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(name="kingdee_save_asset", annotations={"title": "新增或修改固定资产", "readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False})
+async def kingdee_save_asset(params: SaveInput) -> str:
+    """新增或修改固定资产（FA_FAGet）。
+    固定资产新建后状态为"草稿"，需提交+审核后才生效。
+    修改已审核资产需要反审核后才能操作。
+    """
+    try:
+        result = await _post("save", [params.form_id, {"Model": params.model, "NeedUpdateFields": params.need_update_fields, "IsDeleteEntry": params.is_delete_entry}])
+        return _fmt(_result_status(result, "save"))
+    except Exception as e:
+        return _err(e, op="save")
+
+
+@mcp.tool(name="kingdee_query_asset_transfer", annotations={"title": "查询资产调拨单", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+async def kingdee_query_asset_transfer(params: QueryInput) -> str:
+    """查询资产调拨单（FA_Transfer）。
+    资产调拨记录固定资产在部门或使用人之间的转移。
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定资产: "FAssetId.FNumber='FA001'"
+    - 原使用部门: "FOldDeptId.FNumber='D001'"
+    推荐 field_keys：
+    FID,FBillNo,FTransferDate,FDocumentStatus,FAssetId.FNumber,FAssetId.FName,FOldDeptId.FName,FNewDeptId.FName,FTransferReason
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" else "FID,FBillNo,FTransferDate,FDocumentStatus,FAssetId.FNumber,FAssetId.FName,FOldDeptId.FName,FNewDeptId.FName,FTransferReason"
+        result = await _post("query", _query_payload("FA_Transfer", fk, params.filter_string, params.order_string, params.start_row, params.limit))
+        return _fmt({"form_id": "FA_Transfer", "count": len(_rows(result)), "data": _rows(result)})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(name="kingdee_query_asset_scrape", annotations={"title": "查询资产报废单", "readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
+async def kingdee_query_asset_scrape(params: QueryInput) -> str:
+    """查询资产报废单（FA_Scrape）。
+    资产报废记录固定资产的处置，包括正常报废、提前报废、毁损等。
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定资产: "FAssetId.FNumber='FA001'"
+    - 报废类型: "FScrapeType='NORMAL'"
+    推荐 field_keys：
+    FID,FBillNo,FScrapeDate,FDocumentStatus,FAssetId.FNumber,FAssetId.FName,FOriginalAmount,FTotalDepreciate,FNetAmount,FScrapeType,FHandleMethod
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" else "FID,FBillNo,FScrapeDate,FDocumentStatus,FAssetId.FNumber,FAssetId.FName,FOriginalAmount,FTotalDepreciate,FNetAmount,FScrapeType,FHandleMethod"
+        result = await _post("query", _query_payload("FA_Scrape", fk, params.filter_string, params.order_string, params.start_row, params.limit))
+        return _fmt({"form_id": "FA_Scrape", "count": len(_rows(result)), "data": _rows(result)})
+    except Exception as e:
+        return _err(e)
+
+
+# ─────────────────────────────────────────────
 # SCM 供应链工具
 # ─────────────────────────────────────────────
 
@@ -2763,6 +3099,575 @@ async def kingdee_query_stock_transfer_apply(params: QueryInput) -> str:
         return _err(e)
 
 
+# ─────────────────────────────────────────────
+# 审计合规工具（Audit & Compliance）
+# ─────────────────────────────────────────────
+
+class AuditLogInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(default="", description="单据类型，如 PUR_PurchaseOrder（留空查询所有）")
+    bill_id: str = Field(default="", description="单据内码 FID（精确查询）")
+    bill_no: str = Field(default="", description="单据编号，支持模糊查询")
+    user_name: str = Field(default="", description="审核人，支持模糊查询")
+    start_date: str = Field(default="", description="开始日期，格式 YYYY-MM-DD")
+    end_date: str = Field(default="", description="结束日期，格式 YYYY-MM-DD")
+    result: str = Field(default="", description="审核结果：pass(通过)、reject(驳回)、cancel(取消)、all(全部)")
+    filter_string: str = Field(default="", description="额外的过滤条件（Kingdee 查询语法）")
+    order_string: str = Field(default="FCREATEDATE DESC", description="排序条件")
+    start_row: int = Field(default=0, ge=0, description="分页起始行")
+    limit: int = Field(default=50, ge=1, le=2000, description="每页条数，最大2000")
+
+
+class ChangeLogInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(default="", description="单据类型，如 PUR_PurchaseOrder")
+    bill_id: str = Field(default="", description="单据内码 FID")
+    bill_no: str = Field(default="", description="单据编号，支持模糊查询")
+    user_name: str = Field(default="", description="修改人，支持模糊查询")
+    start_date: str = Field(default="", description="开始日期，格式 YYYY-MM-DD")
+    end_date: str = Field(default="", description="结束日期，格式 YYYY-MM-DD")
+    field_name: str = Field(default="", description="字段名称，如 FQty、FPrice 等")
+    filter_string: str = Field(default="", description="额外的过滤条件（Kingdee 查询语法）")
+    order_string: str = Field(default="FCREATEDATE DESC", description="排序条件")
+    start_row: int = Field(default=0, ge=0, description="分页起始行")
+    limit: int = Field(default=50, ge=1, le=2000, description="每页条数，最大2000")
+
+
+class ApprovalFlowInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(..., description="单据类型，如 PUR_PurchaseOrder")
+    bill_id: str = Field(default="", description="单据内码 FID（留空查询该类型所有单据的审批流）")
+    bill_no: str = Field(default="", description="单据编号（与 bill_id 二选一）")
+    status: str = Field(default="all", description="审批状态：pending(进行中)、approved(已完成)、rejected(已驳回)、all(全部)")
+    start_date: str = Field(default="", description="开始日期，格式 YYYY-MM-DD")
+    end_date: str = Field(default="", description="结束日期，格式 YYYY-MM-DD")
+    filter_string: str = Field(default="", description="额外的过滤条件（Kingdee 查询语法）")
+    order_string: str = Field(default="FCREATEDATE DESC", description="排序条件")
+    start_row: int = Field(default=0, ge=0, description="分页起始行")
+    limit: int = Field(default=50, ge=1, le=2000, description="每页条数，最大2000")
+
+
+class PermissionChangeInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    user_name: str = Field(default="", description="用户名称，支持模糊查询")
+    target_type: str = Field(default="", description="授权对象类型：User/Role/Position 等")
+    object_type: str = Field(default="", description="被授权对象类型：Form/Bill/Report 等")
+    object_name: str = Field(default="", description="被授权对象名称")
+    action: str = Field(default="", description="操作类型：Grant/Revoke/Modify 等")
+    start_date: str = Field(default="", description="开始日期，格式 YYYY-MM-DD")
+    end_date: str = Field(default="", description="结束日期，格式 YYYY-MM-DD")
+    filter_string: str = Field(default="", description="额外的过滤条件（Kingdee 查询语法）")
+    order_string: str = Field(default="FCREATEDATE DESC", description="排序条件")
+    start_row: int = Field(default=0, ge=0, description="分页起始行")
+    limit: int = Field(default=50, ge=1, le=2000, description="每页条数，最大2000")
+
+
+class DataBackupInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    backup_type: str = Field(default="", description="备份类型：Full(完整)、Incremental(增量)、Config(配置) 等")
+    status: str = Field(default="", description="备份状态：Success/Failed/Restore 等")
+    operator: str = Field(default="", description="操作人，支持模糊查询")
+    start_date: str = Field(default="", description="开始日期，格式 YYYY-MM-DD")
+    end_date: str = Field(default="", description="结束日期，格式 YYYY-MM-DD")
+    filter_string: str = Field(default="", description="额外的过滤条件（Kingdee 查询语法）")
+    order_string: str = Field(default="FCREATEDATE DESC", description="排序条件")
+    start_row: int = Field(default=0, ge=0, description="分页起始行")
+    limit: int = Field(default=50, ge=1, le=2000, description="每页条数，最大2000")
+
+
+class OperationLogInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    user_name: str = Field(default="", description="操作用户名，支持模糊查询")
+    start_date: str = Field(default="", description="开始日期，格式 YYYY-MM-DD")
+    end_date: str = Field(default="", description="结束日期，格式 YYYY-MM-DD")
+    operate_type: str = Field(default="", description="操作类型，如 Save/Submit/Audit/Delete/View 等")
+    bill_no: str = Field(default="", description="关联单据号，支持模糊查询")
+    form_name: str = Field(default="", description="表单名称，如 采购订单、销售订单 等")
+    filter_string: str = Field(default="", description="额外的过滤条件（Kingdee 查询语法）")
+    order_string: str = Field(default="FDATETIME DESC", description="排序条件")
+    start_row: int = Field(default=0, ge=0, description="分页起始行")
+    limit: int = Field(default=50, ge=1, le=2000, description="每页条数，最大2000")
+
+
+@mcp.tool(
+    name="kingdee_query_audit_log",
+    annotations={"title": "查询审计日志", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_audit_log(params: AuditLogInput) -> str:
+    """查询金蝶云星空的审计日志（BOS_AuditLog）。
+
+    记录单据的审核操作：谁在什么时候审核了哪张单据、审核结果是什么。
+    用于合规审计、审批追溯、反舞弊检查。
+
+    推荐场景：
+    - 合规要求：保留所有审核操作的审计轨迹
+    - 问题排查：某张单据的审核历史
+    - 责任追溯：谁在什么时间通过了/驳回了审批
+
+    返回字段说明：
+    - FCREATEDATE: 审核时间
+    - FCREATORID: 审核人
+    - FOBJECTID: 单据内码
+    - FFORMID: 单据类型
+    - FAUDITRESULT: 审核结果（通过/驳回/取消）
+    - FMEMO: 审核意见
+
+    Returns:
+        str: JSON 格式的审计日志列表
+    """
+    try:
+        conditions = []
+        if params.form_id:
+            conditions.append(f"FFORMID = '{params.form_id}'")
+        if params.bill_id:
+            conditions.append(f"FOBJECTID = '{params.bill_id}'")
+        if params.bill_no:
+            conditions.append(f"FOBJECTNO like '%{_escape_sql_like(params.bill_no)}%'")
+        if params.user_name:
+            conditions.append(f"FCREATORID like '%{_escape_sql_like(params.user_name)}%'")
+        if params.start_date:
+            conditions.append(f"FCREATEDATE > '{params.start_date} 00:00:00'")
+        if params.end_date:
+            conditions.append(f"FCREATEDATE < '{params.end_date} 23:59:59'")
+        if params.result and params.result != "all":
+            result_map = {"pass": "通过", "reject": "驳回", "cancel": "取消"}
+            result_val = result_map.get(params.result, params.result)
+            conditions.append(f"FAUDITRESULT like '%{result_val}%'")
+        if params.filter_string:
+            conditions.append(params.filter_string)
+
+        filter_str = " and ".join(conditions) if conditions else ""
+
+        result = await _post("query", _query_payload(
+            "BOS_AuditLog",
+            "FID,FCREATEDATE,FCREATORID,FOBJECTID,FFORMID,FOBJECTNO,FAUDITRESULT,FMEMO",
+            filter_str,
+            params.order_string,
+            params.start_row,
+            params.limit
+        ))
+        rows = _rows(result)
+
+        return _fmt({
+            "form_id": "BOS_AuditLog",
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "filter_summary": {
+                "form_id": params.form_id or "全部",
+                "bill_id": params.bill_id,
+                "bill_no": params.bill_no,
+                "user_name": params.user_name,
+                "date_range": f"{params.start_date or '~'} ~ {params.end_date or '至今'}",
+                "result": params.result or "全部",
+            },
+            "data": rows,
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_operation_logs",
+    annotations={"title": "查询操作日志", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_operation_logs(params: OperationLogInput) -> str:
+    """查询金蝶云星空的上机操作日志（BOS_OperateLog）。
+
+    记录用户在系统中的所有操作：登录、登出、进入业务对象、业务操作等。
+    用于安全审计、故障排查、操作追溯。
+
+    推荐场景：
+    - 排查某张单据是谁在什么时候操作的
+    - 安全审计：检查异常登录或批量操作
+    - 合规要求：追溯敏感操作记录
+
+    返回字段说明：
+    - FDATETIME: 操作时间
+    - FUSERID: 操作用户
+    - FCOMPUTERNAME: 机器名称
+    - FCLIENTIP: 客户端IP
+    - FENVIRONMENT: 操作场景（0=登入系统, 1=进入业务对象, 3=业务操作, 4=登出系统）
+    - FOPERATENAME: 操作名称（登录/单据查询/批量保存等）
+    - FDESCRIPTION: 操作描述
+    - FInterId: 对象内码（关联单据号）
+    - FTimeConsuming: 耗时(毫秒)
+    - FClientType: 客户端类型
+
+    Returns:
+        str: JSON 格式的操作日志列表
+    """
+    try:
+        conditions = []
+        if params.user_name:
+            conditions.append(f"FUSERID like '%{_escape_sql_like(params.user_name)}%'")
+        if params.start_date:
+            conditions.append(f"FDATETIME > '{params.start_date} 00:00:00'")
+        if params.end_date:
+            conditions.append(f"FDATETIME < '{params.end_date} 23:59:59'")
+        if params.operate_type:
+            conditions.append(f"FOPERATENAME like '%{_escape_sql_like(params.operate_type)}%'")
+        if params.bill_no:
+            conditions.append(f"FInterId like '%{_escape_sql_like(params.bill_no)}%'")
+        if params.form_name:
+            conditions.append(f"FDESCRIPTION like '%{_escape_sql_like(params.form_name)}%'")
+        if params.filter_string:
+            conditions.append(params.filter_string)
+
+        filter_str = " and ".join(conditions) if conditions else ""
+
+        result = await _post("query", _query_payload(
+            "BOS_OperateLog",
+            "FID,FDATETIME,FUSERID,FCOMPUTERNAME,FCLIENTIP,FENVIRONMENT,FOPERATENAME,FDESCRIPTION,FInterId,FTimeConsuming,FClientType",
+            filter_str,
+            params.order_string,
+            params.start_row,
+            params.limit
+        ))
+        rows = _rows(result)
+
+        date_range = f"{params.start_date or '~'} ~ {params.end_date or '至今'}" if params.start_date or params.end_date else "全部"
+
+        return _fmt({
+            "form_id": "BOS_OperateLog",
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "filter_summary": {
+                "user_name": params.user_name,
+                "date_range": date_range,
+                "operate_type": params.operate_type or "全部",
+                "bill_no": params.bill_no,
+            },
+            "data": rows,
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_change_log",
+    annotations={"title": "查询变更记录", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_change_log(params: ChangeLogInput) -> str:
+    """查询金蝶云星空的单据变更记录（BOS_ModifyLog）。
+
+    记录单据字段的修改历史：谁在什么时候修改了什么字段、从什么值改成了什么值。
+    用于数据变更追溯、合规审计、问题排查。
+
+    推荐场景：
+    - 数据治理：追踪关键字段的变更历史
+    - 问题排查：某张单据的修改记录
+    - 合规要求：保留重要数据的修改轨迹
+
+    返回字段说明：
+    - FCREATEDATE: 修改时间
+    - FCREATORID: 修改人
+    - FOBJECTID: 单据内码
+    - FFIELDNAME: 字段名称
+    - FOLDVALUE: 修改前的值
+    - FNEWVALUE: 修改后的值
+
+    Returns:
+        str: JSON 格式的变更记录列表
+    """
+    try:
+        conditions = []
+        if params.form_id:
+            conditions.append(f"FFORMID = '{params.form_id}'")
+        if params.bill_id:
+            conditions.append(f"FOBJECTID = '{params.bill_id}'")
+        if params.bill_no:
+            conditions.append(f"FOBJECTNO like '%{_escape_sql_like(params.bill_no)}%'")
+        if params.user_name:
+            conditions.append(f"FCREATORID like '%{_escape_sql_like(params.user_name)}%'")
+        if params.start_date:
+            conditions.append(f"FCREATEDATE > '{params.start_date} 00:00:00'")
+        if params.end_date:
+            conditions.append(f"FCREATEDATE < '{params.end_date} 23:59:59'")
+        if params.field_name:
+            conditions.append(f"FFIELDNAME like '%{_escape_sql_like(params.field_name)}%'")
+        if params.filter_string:
+            conditions.append(params.filter_string)
+
+        filter_str = " and ".join(conditions) if conditions else ""
+
+        result = await _post("query", _query_payload(
+            "BOS_ModifyLog",
+            "FID,FCREATEDATE,FCREATORID,FOBJECTID,FFORMID,FOBJECTNO,FFIELDNAME,FOLDVALUE,FNEWVALUE",
+            filter_str,
+            params.order_string,
+            params.start_row,
+            params.limit
+        ))
+        rows = _rows(result)
+
+        return _fmt({
+            "form_id": "BOS_ModifyLog",
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "filter_summary": {
+                "form_id": params.form_id or "全部",
+                "bill_id": params.bill_id,
+                "bill_no": params.bill_no,
+                "user_name": params.user_name,
+                "field_name": params.field_name,
+                "date_range": f"{params.start_date or '~'} ~ {params.end_date or '至今'}",
+            },
+            "data": rows,
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_approval_flow",
+    annotations={"title": "查询审批流程", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_approval_flow(params: ApprovalFlowInput) -> str:
+    """查询金蝶云星空的审批流程记录。
+
+    记录单据从提交到最终审核的完整审批轨迹，包括每个节点的审批人、时间、结果和意见。
+    用于审批追溯、流程优化、合规检查。
+
+    推荐场景：
+    - 审批追溯：某张单据走过了哪些审批节点
+    - 流程优化：分析审批时长和瓶颈
+    - 合规检查：确认关键单据是否按流程审批
+
+    注意：金蝶审批流程数据可能存储在多个表单中，
+    如 V_SFA_ApprovalRecord（审批记录）、Workflow_Instance（流程实例）等。
+    如查询无结果，请用 kingdee_get_fields 查看实际可用字段。
+
+    Returns:
+        str: JSON 格式的审批流程列表
+    """
+    try:
+        conditions = []
+        conditions.append(f"FFORMID = '{params.form_id}'")
+        if params.bill_id:
+            conditions.append(f"FOBJECTID = '{params.bill_id}'")
+        if params.bill_no:
+            conditions.append(f"FOBJECTNO like '%{_escape_sql_like(params.bill_no)}%'")
+        if params.start_date:
+            conditions.append(f"FCREATEDATE > '{params.start_date} 00:00:00'")
+        if params.end_date:
+            conditions.append(f"FCREATEDATE < '{params.end_date} 23:59:59'")
+        if params.status and params.status != "all":
+            status_map = {
+                "pending": "审批中",
+                "approved": "已通过",
+                "rejected": "已驳回",
+            }
+            status_val = status_map.get(params.status, params.status)
+            conditions.append(f"FRESULT like '%{status_val}%'")
+        if params.filter_string:
+            conditions.append(params.filter_string)
+
+        filter_str = " and ".join(conditions) if conditions else ""
+
+        result = await _post("query", _query_payload(
+            "V_SFA_ApprovalRecord",
+            "FID,FCREATEDATE,FCREATORID,FOBJECTID,FFORMID,FOBJECTNO,FNODEID,FNODENAME,FAPPROVERID,"
+            "FAPPROVERNAME,FAPPROVEDATE,FRESULT,FOPINION,FREMARK",
+            filter_str,
+            params.order_string,
+            params.start_row,
+            params.limit
+        ))
+        rows = _rows(result)
+
+        if not rows:
+            result = await _post("query", _query_payload(
+                "Workflow_Instance",
+                "FID,FCREATEDATE,FUSERID,FFORMID,FObjectId,FObjectNo,FWorkflowId,FWorkflowName,"
+                "FNodeId,FNodeName,FApproverId,FApproverName,FApproveDate,FResult,FOpinion",
+                filter_str,
+                params.order_string,
+                params.start_row,
+                params.limit
+            ))
+            rows = _rows(result)
+
+        return _fmt({
+            "form_id": "V_SFA_ApprovalRecord / Workflow_Instance",
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "filter_summary": {
+                "form_id": params.form_id,
+                "bill_id": params.bill_id,
+                "bill_no": params.bill_no,
+                "status": params.status,
+                "date_range": f"{params.start_date or '~'} ~ {params.end_date or '至今'}",
+            },
+            "data": rows,
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_permission",
+    annotations={"title": "查询权限变更", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_permission(params: PermissionChangeInput) -> str:
+    """查询金蝶云星空的权限变更记录。
+
+    记录用户权限的授予、撤销、修改操作。
+    用于安全审计、合规检查、权限追溯。
+
+    推荐场景：
+    - 安全审计：谁在什么时候被授予/撤销了什么权限
+    - 合规要求：保留权限变更的审计轨迹
+    - 问题排查：某用户无法访问某功能的原因
+
+    注意：金蝶权限数据可能存储在多个表单中，
+    如 SEC_Permission（权限记录）、SEC_UserRole（用户角色关系）等。
+    如查询无结果，请用 kingdee_get_fields 查看实际可用字段。
+
+    Returns:
+        str: JSON 格式的权限变更列表
+    """
+    try:
+        conditions = []
+        if params.user_name:
+            conditions.append(f"FUSERNAME like '%{_escape_sql_like(params.user_name)}%'")
+        if params.target_type:
+            conditions.append(f"FTARGETTYPE like '%{_escape_sql_like(params.target_type)}%'")
+        if params.object_type:
+            conditions.append(f"FOBJECTTYPE like '%{_escape_sql_like(params.object_type)}%'")
+        if params.object_name:
+            conditions.append(f"FOBJECTNAME like '%{_escape_sql_like(params.object_name)}%'")
+        if params.action:
+            conditions.append(f"FACTION like '%{_escape_sql_like(params.action)}%'")
+        if params.start_date:
+            conditions.append(f"FCREATEDATE > '{params.start_date} 00:00:00'")
+        if params.end_date:
+            conditions.append(f"FCREATEDATE < '{params.end_date} 23:59:59'")
+        if params.filter_string:
+            conditions.append(params.filter_string)
+
+        filter_str = " and ".join(conditions) if conditions else ""
+
+        result = await _post("query", _query_payload(
+            "SEC_Permission",
+            "FID,FCREATEDATE,FCREATORID,FUSERNAME,FTARGETTYPE,FOBJECTTYPE,FOBJECTID,FOBJECTNAME,FACTION,FPRIVILEGE",
+            filter_str,
+            params.order_string,
+            params.start_row,
+            params.limit
+        ))
+        rows = _rows(result)
+
+        if not rows:
+            result = await _post("query", _query_payload(
+                "SEC_UserRole",
+                "FID,FCREATEDATE,FCREATORID,FUSERID,FUSERNAME,FROLEID,FROLENAME,FACTION",
+                filter_str,
+                params.order_string,
+                params.start_row,
+                params.limit
+            ))
+            rows = _rows(result)
+
+        return _fmt({
+            "form_id": "SEC_Permission / SEC_UserRole",
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "filter_summary": {
+                "user_name": params.user_name,
+                "target_type": params.target_type,
+                "object_type": params.object_type,
+                "object_name": params.object_name,
+                "action": params.action,
+                "date_range": f"{params.start_date or '~'} ~ {params.end_date or '至今'}",
+            },
+            "data": rows,
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_data_backup",
+    annotations={"title": "查询数据备份记录", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_data_backup(params: DataBackupInput) -> str:
+    """查询金蝶云星空的数据备份记录。
+
+    记录系统的数据备份和恢复操作。
+    用于灾备验证、合规检查、恢复演练。
+
+    推荐场景：
+    - 灾备验证：确认备份是否按计划执行
+    - 合规要求：保留备份操作的审计轨迹
+    - 恢复演练：查找可用的备份点
+
+    注意：金蝶备份数据可能存储在系统配置表或其他后台表单中，
+    如需访问请确认当前用户有系统管理权限。
+    如查询无结果，请用 kingdee_get_fields 查看实际可用字段。
+
+    Returns:
+        str: JSON 格式的数据备份记录列表
+    """
+    try:
+        conditions = []
+        if params.backup_type:
+            conditions.append(f"FBACKUPTYPE like '%{_escape_sql_like(params.backup_type)}%'")
+        if params.status:
+            conditions.append(f"FSTATUS like '%{_escape_sql_like(params.status)}%'")
+        if params.operator:
+            conditions.append(f"FOPERATOR like '%{_escape_sql_like(params.operator)}%'")
+        if params.start_date:
+            conditions.append(f"FBACKUPDATE > '{params.start_date} 00:00:00'")
+        if params.end_date:
+            conditions.append(f"FBACKUPDATE < '{params.end_date} 23:59:59'")
+        if params.filter_string:
+            conditions.append(params.filter_string)
+
+        filter_str = " and ".join(conditions) if conditions else ""
+
+        result = await _post("query", _query_payload(
+            "DB_BackupRecord",
+            "FID,FBACKUPDATE,FOPERATOR,FBACKUPTYPE,FSTATUS,FBACKUPFILE,FBACKUPSIZE,FREMARK",
+            filter_str,
+            params.order_string,
+            params.start_row,
+            params.limit
+        ))
+        rows = _rows(result)
+
+        if not rows:
+            result = await _post("query", _query_payload(
+                "T_BAS_BackupRecord",
+                "FID,FCREATEDATE,FCREATORID,FOPERATOR,FBACKUPTYPE,FSTATUS,FPATH,FSIZE",
+                filter_str,
+                params.order_string,
+                params.start_row,
+                params.limit
+            ))
+            rows = _rows(result)
+
+        return _fmt({
+            "form_id": "DB_BackupRecord / T_BAS_BackupRecord",
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "filter_summary": {
+                "backup_type": params.backup_type or "全部",
+                "status": params.status or "全部",
+                "operator": params.operator,
+                "date_range": f"{params.start_date or '~'} ~ {params.end_date or '至今'}",
+            },
+            "data": rows,
+        })
+    except Exception as e:
+        return _err(e)
+
+
 @mcp.tool(
     name="kingdee_query_purchase_inquiry",
     annotations={"title": "查询采购询价单", "readOnlyHint": True, "destructiveHint": False,
@@ -2829,6 +3734,254 @@ async def kingdee_query_supplier_quotes(params: QueryInput) -> str:
         return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
     except Exception as e:
         return _err(e)
+
+
+
+
+# ─────────────────────────────────────────────
+# 杂项出入库和调拨工具
+# ─────────────────────────────────────────────
+
+@mcp.tool(
+    name="kingdee_query_misc_movement_detail",
+    annotations={"title": "查询杂项出入库明细表", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_misc_movement_detail(params: QueryInput) -> str:
+    """查询杂项出入库明细表（STK_MiscMovementDetail）。
+
+    用于查看杂项出入库的明细数据，包括其他入库、其他出库等。
+
+    常用 filter_string：
+    - 指定日期范围: "FBillDate>='2024-01-01' and FBillDate<='2024-12-31'"
+    - 指定物料: "FMaterialId.FNumber='MAT001'"
+    - 指定仓库: "FStockId.FNumber='WH01'"
+
+    推荐 field_keys（默认已包含关键字段）：
+    FID,FBillNo,FBillDate,FDocumentStatus,FStockOrgId.FName,
+    FMaterialId.FNumber,FMaterialId.FName,FUnitId.FName,FQty,FPrice,FAmount
+
+    Returns:
+        str: JSON 格式的杂项出入库明细列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else (
+                "FID,FBillNo,FBillDate,FDocumentStatus,FStockOrgId.FName,"
+                "FMaterialId.FNumber,FMaterialId.FName,FUnitId.FName,"
+                "FQty,FPrice,FAmount"
+            )
+        result = await _post("query", _query_payload(
+            "STK_MiscMovementDetail", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({
+            "form_id": "STK_MiscMovementDetail",
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "data": rows
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_transfer_pending_detail",
+    annotations={"title": "查询分步式调出未调入明细", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_transfer_pending_detail(params: QueryInput) -> str:
+    """查询分步式调出未调入明细表（STK_TransferPendingDetail）。
+
+    用于查看分步式调拨流程中，已调出但未调入的单据明细。
+
+    常用 filter_string：
+    - 指定调出日期范围: "FOutDate>='2024-01-01' and FOutDate<='2024-12-31'"
+    - 指定物料: "FMaterialId.FNumber='MAT001'"
+    - 指定调出仓库: "FOutStockId.FNumber='WH01'"
+
+    推荐 field_keys（默认已包含关键字段）：
+    FID,FBillNo,FOutDate,FInDate,FDocumentStatus,FStockOrgId.FName,
+    FOutStockId.FName,FInStockId.FName,FMaterialId.FNumber,FMaterialId.FName,
+    FUnitId.FName,FOutQty,FInQty,FPendingQty
+
+    Returns:
+        str: JSON 格式的分步式调出未调入明细列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else (
+                "FID,FBillNo,FOutDate,FInDate,FDocumentStatus,FStockOrgId.FName,"
+                "FOutStockId.FName,FInStockId.FName,FMaterialId.FNumber,FMaterialId.FName,"
+                "FUnitId.FName,FOutQty,FInQty,FPendingQty"
+            )
+        result = await _post("query", _query_payload(
+            "STK_TransferPendingDetail", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({
+            "form_id": "STK_TransferPendingDetail",
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "data": rows
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_transfer_apply",
+    annotations={"title": "查询调拨申请单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_transfer_apply(params: QueryInput) -> str:
+    """查询调拨申请单（STK_TransferApply）列表。
+
+    调拨申请单是调拨业务的起点，可下推生成直接调拨单或分步式调拨单。
+
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定日期范围: "FBillDate>='2024-01-01' and FBillDate<='2024-12-31'"
+    - 指定调出仓库: "FOutStockId.FNumber='WH01'"
+    - 指定调入仓库: "FInStockId.FNumber='WH02'"
+    - 未关闭: "FCloseStatus='A' and FBusinessClose='A'"
+
+    推荐 field_keys（默认已包含关键字段）：
+    FID,FBillNo,FBillDate,FDocumentStatus,FStockOrgId.FName,
+    FOutStockId.FName,FInStockId.FName,FTransferType,
+    FMaterialId.FNumber,FMaterialId.FName,FUnitId.FName,FQty,FPrice,FAmount
+
+    Returns:
+        str: JSON 格式的调拨申请单列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else (
+                "FID,FBillNo,FBillDate,FDocumentStatus,FStockOrgId.FName,"
+                "FOutStockId.FName,FInStockId.FName,FTransferType,"
+                "FMaterialId.FNumber,FMaterialId.FName,FUnitId.FName,FQty,FPrice,FAmount"
+            )
+        result = await _post("query", _query_payload(
+            "STK_TransferApply", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({
+            "form_id": "STK_TransferApply",
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "data": rows
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_transfer_direct",
+    annotations={"title": "查询直接调拨单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_transfer_direct(params: QueryInput) -> str:
+    """查询直接调拨单（STK_TransferDirect）列表。
+
+    直接调拨单用于一步完成调拨业务，同时更新调出仓和调入仓库存。
+
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定日期范围: "FBillDate>='2024-01-01' and FBillDate<='2024-12-31'"
+    - 指定调出仓库: "FOutStockId.FNumber='WH01'"
+    - 指定调入仓库: "FInStockId.FNumber='WH02'"
+    - 未关闭: "FCloseStatus='A' and FBusinessClose='A'"
+
+    推荐 field_keys（默认已包含关键字段）：
+    FID,FBillNo,FBillDate,FDocumentStatus,FStockOrgId.FName,
+    FOutStockId.FName,FInStockId.FName,FMaterialId.FNumber,
+    FMaterialId.FName,FUnitId.FName,FQty,FPrice,FAmount
+
+    Returns:
+        str: JSON 格式的直接调拨单列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else (
+                "FID,FBillNo,FBillDate,FDocumentStatus,FStockOrgId.FName,"
+                "FOutStockId.FName,FInStockId.FName,FMaterialId.FNumber,"
+                "FMaterialId.FName,FUnitId.FName,FQty,FPrice,FAmount"
+            )
+        result = await _post("query", _query_payload(
+            "STK_TransferDirect", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({
+            "form_id": "STK_TransferDirect",
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "data": rows
+        })
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_push_stock_transfer",
+    annotations={"title": "调拨申请下推调拨单", "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False}
+)
+async def kingdee_push_stock_transfer(params: PushDownInput) -> str:
+    """从调拨申请单下推到直接调拨单（STK_TransferApply -> STK_TransferDirect）。
+
+    用于将调拨申请单下推生成直接调拨单，一步完成调拨。
+
+    参数说明：
+    - form_id: 固定为 STK_TransferApply（调拨申请单）
+    - target_form_id: 固定为 STK_TransferDirect（直接调拨单）
+    - source_bill_nos: 调拨申请单的单据编号列表
+
+    转换规则说明：
+    - 默认（rule_id=空）：使用系统配置的默认转换规则
+    - enable_default_rule=true：强制启用默认下推规则
+    - rule_id 显式指定：绕过默认规则，使用指定规则
+
+    响应包含：
+    - Result.ResponseStatus：保存结果（IsSuccess 判断整体是否成功）
+    - Result.ConvertResponseStatus：每行下推转换结果
+
+    Returns:
+        str: JSON，含 success / bill_nos / next_action 字段
+    """
+    try:
+        push_data: dict[str, Any] = {
+            "TargetFormId": "STK_TransferDirect",
+            "Numbers": params.source_bill_nos,
+        }
+        if params.rule_id:
+            push_data["RuleId"] = params.rule_id
+        if params.enable_default_rule:
+            push_data["IsEnableDefaultRule"] = "true"
+        if params.draft_on_fail:
+            push_data["IsDraftWhenSaveFail"] = "true"
+        result = await _post_raw("push", "STK_TransferApply", push_data)
+        status_data = _result_status(result, "push")
+        rs = result.get("Result", result) if isinstance(result, dict) else {}
+        numbers = rs.get("Numbers", [])
+        ids = rs.get("Ids", [])
+        if status_data.get("success"):
+            status_data["source_bill_nos"] = params.source_bill_nos
+            status_data["target_form_id"] = "STK_TransferDirect"
+            if numbers:
+                status_data["target_bill_nos"] = numbers
+            if ids:
+                status_data["target_fids"] = ids if isinstance(ids, list) else [ids]
+            status_data["tip"] = (
+                f"已生成 {len(numbers)} 张直接调拨单，"
+                "请依次调用 kingdee_submit_bills + kingdee_audit_bills 完成提交和审核"
+            )
+        return _fmt(status_data)
+    except Exception as e:
+        return _err(e, op="push")
 
 
 # ─────────────────────────────────────────────
@@ -2968,7 +4121,684 @@ def resource_help() -> str:
 - 模糊搜索: FName like '%关键词%'
 - 未关闭: FCloseStatus='A'
 - 业务正常: FBusinessClose='A'
+
+## 成本管理（需启用成本模块）
+- kingdee_query_material_cost              查询物料成本库
+- kingdee_query_cost_calculation         查询成本计算单
+- kingdee_query_cost_centers             查询成本中心
+- kingdee_query_cost_items              查询成本项目
+- kingdee_query_product_standard_cost    查询产品标准成本
 """
+
+
+# ─────────────────────────────────────────────
+# 成本管理工具（存货核算、产品成本、标准成本）
+# ─────────────────────────────────────────────
+
+class MaterialCostQueryInput(QueryInput):
+    """物料成本库查询输入模型"""
+    pass
+
+
+@mcp.tool(
+    name="kingdee_query_material_cost",
+    annotations={"title": "查询物料成本库", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_material_cost(params: QueryInput) -> str:
+    """查询物料成本库（BD_MaterialCost）。
+
+    返回物料的标准成本、最新成本、平均成本等信息。
+
+    常用 filter_string：
+    - 指定物料: "FMaterialId.FNumber='MAT001'"
+    - 指定成本组织: "FCostOrgId.FNumber='100'"
+
+    推荐 field_keys：
+    FMaterialId.FNumber,FMaterialId.FName,FUnitId.FName,FStdCost,FLatestCost,FAvgCost
+
+    Returns:
+        str: JSON 格式的物料成本列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FMaterialId.FNumber,FMaterialId.FName,FUnitId.FName,FStdCost,FLatestCost,FAvgCost"
+        result = await _post("query", _query_payload(
+            "BD_MaterialCost", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_material_target_cost",
+    annotations={"title": "查询物料目标成本单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_material_target_cost(params: QueryInput) -> str:
+    """查询物料目标成本单（BD_MatTargetCost）。
+
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定物料: "FMaterialId.FNumber='MAT001'"
+
+    推荐 field_keys：
+    FBillNo,FDate,FDocumentStatus,FMaterialId.FNumber,FMaterialId.FName,FTargetCost
+
+    Returns:
+        str: JSON 格式的目标成本单列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FBillNo,FDate,FDocumentStatus,FMaterialId.FNumber,FMaterialId.FName,FTargetCost"
+        result = await _post("query", _query_payload(
+            "BD_MatTargetCost", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_cost_calculation",
+    annotations={"title": "查询成本计算单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_cost_calculation(params: QueryInput) -> str:
+    """查询成本计算单（CB_CostCalBill）列表。
+
+    常用 filter_string：
+    - 指定年度: "FYear=2024"
+    - 指定期间: "FPeriod='01'"
+    - 指定物料: "FMaterialId.FNumber='MAT001'"
+
+    推荐 field_keys：
+    FYear,FPeriod,FMaterialId.FNumber,FMaterialId.FName,FCostAmt,FMaterialCost,FLabourCost
+
+    Returns:
+        str: JSON 格式的成本计算单列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FYear,FPeriod,FMaterialId.FNumber,FMaterialId.FName,FCostAmt,FMaterialCost,FLabourCost"
+        result = await _post("query", _query_payload(
+            "CB_CostCalBill", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_cost_centers",
+    annotations={"title": "查询成本中心", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_cost_centers(params: QueryInput) -> str:
+    """查询成本中心基础资料（CB_CostCenter）。
+
+    常用 filter_string：
+    - 指定编码: "FNumber like 'CC%'"
+    - 启用状态: "FIsActive='1'"
+
+    推荐 field_keys：
+    FNumber,FName,FDeptId.FName,FIsActive
+
+    Returns:
+        str: JSON 格式的成本中心列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FNumber,FName,FDeptId.FName,FIsActive"
+        result = await _post("query", _query_payload(
+            "CB_CostCenter", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_cost_items",
+    annotations={"title": "查询成本项目", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_cost_items(params: QueryInput) -> str:
+    """查询成本项目基础资料（CB_CostItem）。
+
+    常用 filter_string：
+    - 指定编码: "FNumber like 'CI%'"
+    - 成本项目类型: "FCostItemType='1'"
+
+    推荐 field_keys：
+    FNumber,FName,FCostItemType,FIsActive
+
+    Returns:
+        str: JSON 格式的成本项目列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FNumber,FName,FCostItemType,FIsActive"
+        result = await _post("query", _query_payload(
+            "CB_CostItem", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_product_standard_cost",
+    annotations={"title": "查询产品标准成本", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_product_standard_cost(params: QueryInput) -> str:
+    """查询产品标准成本（STD_ProductCostQuery）。
+
+    常用 filter_string：
+    - 指定物料: "FMaterialId.FNumber='MAT001'"
+    - 指定成本版本: "FCostVersionId.FNumber='STD01'"
+
+    推荐 field_keys：
+    FMaterialId.FNumber,FMaterialId.FName,FUnitId.FName,FStdCost,FMaterialCost,FLabourCost,FFeeCost
+
+    Returns:
+        str: JSON 格式的产品标准成本列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FMaterialId.FNumber,FMaterialId.FName,FUnitId.FName,FStdCost,FMaterialCost,FLabourCost,FFeeCost"
+        result = await _post("query", _query_payload(
+            "STD_ProductCostQuery", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_cost_adjustments",
+    annotations={"title": "查询成本调整单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_cost_adjustments(params: QueryInput) -> str:
+    """查询成本调整单（STK_CostAdjust）。
+
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定调整类型: "FAdjustType='1'"
+
+    推荐 field_keys：
+    FBillNo,FDate,FDocumentStatus,FCostOrgId.FNumber,FCostOrgId.FName,FAdjustType,FAdjustAmount
+
+    Returns:
+        str: JSON 格式的成本调整单列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FBillNo,FDate,FDocumentStatus,FCostOrgId.FNumber,FCostOrgId.FName,FAdjustType,FAdjustAmount"
+        result = await _post("query", _query_payload(
+            "STK_CostAdjust", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_save_cost_adjustment",
+    annotations={"title": "保存成本调整单", "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False}
+)
+async def kingdee_save_cost_adjustment(params: SaveInput) -> str:
+    """新建或修改成本调整单（STK_CostAdjust）。
+
+    model 示例：
+    {
+      "FDate": "2024-01-15",
+      "FCostOrgId": {"FNumber": "100"},
+      "FAdjustType": "1",
+      "FCostAdjustEntry": [
+        {"FMaterialId": {"FNumber": "MAT001"}, "FAdjustQty": 100, "FAdjustPrice": 10.5}
+      ]
+    }
+
+    Returns:
+        str: JSON，含 FID 和 FBillNo
+    """
+    try:
+        model = dict(params.model)
+        model.setdefault("FID", 0)
+        result = await _post_raw(
+            "save", "STK_CostAdjust", model,
+            need_return_fields=["FID", "FBillNo"],
+        )
+        status_data = _result_status(result, "save")
+        if status_data.get("success"):
+            status_data["tip"] = "成本调整单已保存，需要提交+审核后才能生效"
+        return _fmt(status_data)
+    except Exception as e:
+        return _err(e, op="save")
+
+
+@mcp.tool(
+    name="kingdee_query_instant_cost_compare",
+    annotations={"title": "即时成本对比分析", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_instant_cost_compare(params: QueryInput) -> str:
+    """查询即时成本对比分析表（STK_InstantCostCompare）。
+
+    对比即时成本与核算成本的差异。
+
+    常用 filter_string：
+    - 指定物料: "FMaterialId.FNumber='MAT001'"
+    - 指定仓库: "FStockId.FNumber='WH01'"
+
+    推荐 field_keys：
+    FMaterialId.FNumber,FMaterialId.FName,FStockId.FName,FInstantCost,F核算成本,FDiffAmt
+
+    Returns:
+        str: JSON 格式的即时成本对比列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FMaterialId.FNumber,FMaterialId.FName,FStockId.FName,FInstantCost,FCostPrice,FDiffAmt"
+        result = await _post("query", _query_payload(
+            "STK_InstantCostCompare", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_cost_trend",
+    annotations={"title": "成本价趋势分析", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_cost_trend(params: QueryInput) -> str:
+    """查询成本价趋势分析表（STK_CostTrend）。
+
+    分析物料成本价格的变化趋势。
+
+    常用 filter_string：
+    - 指定物料: "FMaterialId.FNumber='MAT001'"
+    - 指定日期范围: "FDate>='2024-01-01' and FDate<='2024-12-31'"
+
+    推荐 field_keys：
+    FMaterialId.FNumber,FMaterialId.FName,FDate,FCostPrice,FPriceChange
+
+    Returns:
+        str: JSON 格式的成本价趋势列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FMaterialId.FNumber,FMaterialId.FName,FDate,FCostPrice,FPriceChange"
+        result = await _post("query", _query_payload(
+            "STK_CostTrend", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_finished_product_cost",
+    annotations={"title": "完工入库成本查询", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_finished_product_cost(params: QueryInput) -> str:
+    """查询完工入库产品成本（CB_FinishInCostQuery）。
+
+    常用 filter_string：
+    - 指定生产订单: "FMoBillNo='MO000001'"
+    - 指定期间: "FYear=2024 and FPeriod='01'"
+
+    推荐 field_keys：
+    FMoBillNo,FMaterialId.FNumber,FMaterialId.FName,FFinishQty,FCostPrice,FCostAmt
+
+    Returns:
+        str: JSON 格式的完工成本列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FMoBillNo,FMaterialId.FNumber,FMaterialId.FName,FFinishQty,FCostPrice,FCostAmt"
+        result = await _post("query", _query_payload(
+            "CB_FinishInCostQuery", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_material_cost_usage",
+    annotations={"title": "材料耗用成本查询", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_material_cost_usage(params: QueryInput) -> str:
+    """查询生产材料耗用成本（CB_MaterialCostQuery）。
+
+    常用 filter_string：
+    - 指定生产订单: "FMoBillNo='MO000001'"
+    - 指定物料: "FMaterialId.FNumber='MAT001'"
+
+    推荐 field_keys：
+    FMoBillNo,FMaterialId.FNumber,FMaterialId.FName,FConsumeQty,FCostPrice,FCostAmt
+
+    Returns:
+        str: JSON 格式的材料耗用成本列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FMoBillNo,FMaterialId.FNumber,FMaterialId.FName,FConsumeQty,FCostPrice,FCostAmt"
+        result = await _post("query", _query_payload(
+            "CB_MaterialCostQuery", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+# ─────────────────────────────────────────────
+# 生产管理工具（生产订单/领料单/入库单）
+# ─────────────────────────────────────────────
+
+class ProductionOrderBillIdsInput(BillIdsInput):
+    """生产订单单据ID输入模型"""
+    pass
+
+
+@mcp.tool(
+    name="kingdee_query_production_orders",
+    annotations={"title": "查询生产订单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_production_orders(params: QueryInput) -> str:
+    """查询生产订单（PRD_MO）列表。
+
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定日期: "FDate>='2024-01-01'"
+    - 进行中: "FStatus='2'"  (1=计划,2=确认,3=投料,4=汇报,5=入库)
+    - 指定物料: "FMaterialId.FNumber='MAT001'"
+
+    推荐 field_keys：
+    FID,FBillNo,FDate,FDocumentStatus,FMaterialId.FName,FQty,FPlanStartDate,FPlanFinishDate,FStatus
+
+    Returns:
+        str: JSON 格式的生产订单列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FID,FBillNo,FDate,FDocumentStatus,FMaterialId.FNumber,FMaterialId.FName,FQty,FPlanStartDate,FPlanFinishDate,FStatus"
+        result = await _post("query", _query_payload(
+            "PRD_MO", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_production_pick_materials",
+    annotations={"title": "查询生产领料单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_production_pick_materials(params: QueryInput) -> str:
+    """查询生产领料单（PRD_PickMtrl）列表。
+
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定生产订单: "FMoBillNo='MO000001'"
+    - 指定仓库: "FStockId.FNumber='CK001'"
+
+    推荐 field_keys：
+    FID,FBillNo,FDate,FDocumentStatus,FMoBillNo,FMaterialId.FName,FPickQty,FStockId.FName
+
+    Returns:
+        str: JSON 格式的生产领料单列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FID,FBillNo,FDate,FDocumentStatus,FMoBillNo,FMaterialId.FNumber,FMaterialId.FName,FPickQty,FStockId.FName"
+        result = await _post("query", _query_payload(
+            "PRD_PickMtrl", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_production_stock_in",
+    annotations={"title": "查询生产入库单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_production_stock_in(params: QueryInput) -> str:
+    """查询生产入库单（PRD_Instock）列表。
+
+    常用 filter_string：
+    - 已审核: "FDocumentStatus='C'"
+    - 指定生产订单: "FMoBillNo='MO000001'"
+    - 指定仓库: "FStockId.FNumber='CK001'"
+
+    推荐 field_keys：
+    FID,FBillNo,FDate,FDocumentStatus,FMoBillNo,FMaterialId.FName,FInQty,FStockId.FName
+
+    Returns:
+        str: JSON 格式的生产入库单列表
+    """
+    try:
+        fk = params.field_keys if params.field_keys != "FID,FBillNo,FDate,FDocumentStatus" \
+            else "FID,FBillNo,FDate,FDocumentStatus,FMoBillNo,FMaterialId.FNumber,FMaterialId.FName,FInQty,FStockId.FName"
+        result = await _post("query", _query_payload(
+            "PRD_Instock", fk, params.filter_string,
+            params.order_string, params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({"count": len(rows), "has_more": len(rows) == params.limit, "data": rows})
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_view_production_order",
+    annotations={"title": "查看生产订单详情", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_view_production_order(params: ViewInput) -> str:
+    """查看生产订单（PRD_MO）完整详情。
+
+    必填参数：
+    - form_id: "PRD_MO"
+    - bill_id: 单据 FID 或 bill_no: 单据编号
+
+    Returns:
+        str: JSON 格式的生产订单完整数据
+    """
+    try:
+        result = await _post("view", ["PRD_MO", params.to_view_payload()])
+        return _fmt({"form_id": "PRD_MO", "data": result.get("Result", result)})
+    except Exception as e:
+        return _err(e)
+
+
+class ProductionOrderSaveInput(SaveInput):
+    """生产订单保存输入模型"""
+    pass
+
+
+@mcp.tool(
+    name="kingdee_save_production_order",
+    annotations={"title": "新建或修改生产订单", "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False}
+)
+async def kingdee_save_production_order(params: ProductionOrderSaveInput) -> str:
+    """新建或修改生产订单（PRD_MO）。
+
+    新建示例：
+    {
+      "FDate": "2024-01-15",
+      "FMaterialId": {"FNumber": "MAT001"},
+      "FQty": 100,
+      "FPlanStartDate": "2024-01-20",
+      "FPlanFinishDate": "2024-01-25"
+    }
+
+    Returns:
+        str: JSON，含 FID 和 FBillNo
+    """
+    try:
+        model = dict(params.model)
+        model.setdefault("FID", 0)
+        result = await _post_raw(
+            "save", "PRD_MO", model,
+            need_return_fields=["FID", "FBillNo"],
+        )
+        status_data = _result_status(result, "save")
+        if status_data.get("success"):
+            status_data["tip"] = "生产订单已保存为草稿，需要提交+审核后才能下推领料单"
+        return _fmt(status_data)
+    except Exception as e:
+        return _err(e, op="save")
+
+
+@mcp.tool(
+    name="kingdee_submit_production_orders",
+    annotations={"title": "提交生产订单", "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False}
+)
+async def kingdee_submit_production_orders(params: ProductionOrderBillIdsInput) -> str:
+    """提交生产订单（PRD_MO）至审核队列。
+
+    Returns:
+        str: JSON，含 success / next_action / bill_ids
+    """
+    try:
+        result = await _post_raw("submit", "PRD_MO", {"Ids": params.bill_ids})
+        status_data = _result_status(result, "submit")
+        if status_data.get("success"):
+            status_data["next_action"] = "kingdee_audit_production_orders"
+        return _fmt(status_data)
+    except Exception as e:
+        return _err(e, op="submit")
+
+
+@mcp.tool(
+    name="kingdee_audit_production_orders",
+    annotations={"title": "审核生产订单", "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False}
+)
+async def kingdee_audit_production_orders(params: ProductionOrderBillIdsInput) -> str:
+    """审核生产订单（PRD_MO）。
+
+    Returns:
+        str: JSON，含 success / bill_ids
+    """
+    try:
+        result = await _post_raw("audit", "PRD_MO", {"Ids": params.bill_ids})
+        return _fmt(_result_status(result, "audit"))
+    except Exception as e:
+        return _err(e, op="audit")
+
+
+class ProductionPickPushInput(BaseModel):
+    """生产订单下推领料单输入"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    bill_nos: List[str] = Field(description="源单生产订单编号列表")
+    rule_id: Optional[str] = Field(default=None, description="转换规则ID")
+    draft_on_fail: bool = Field(default=True)
+
+
+@mcp.tool(
+    name="kingdee_push_production_pick",
+    annotations={"title": "生产订单下推领料单", "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False}
+)
+async def kingdee_push_production_pick(params: ProductionPickPushInput) -> str:
+    """从生产订单下推生成生产领料单（PRD_PickMtrl）。
+
+    Returns:
+        str: JSON，含 success / target_bill_nos / next_action
+    """
+    try:
+        result = await _post_raw(
+            "push", "PRD_MO", {"Ids": params.bill_nos},
+            target_form_id="PRD_PickMtrl",
+            rule_id=params.rule_id,
+            draft_on_fail=params.draft_on_fail,
+        )
+        status_data = _result_status(result, "push")
+        if status_data.get("success"):
+            status_data["next_action"] = "kingdee_submit_bills + kingdee_audit_bills"
+            status_data["tip"] = "领料单审核时扣减即时库存"
+        return _fmt(status_data)
+    except Exception as e:
+        return _err(e, op="push")
+
+
+class ProductionStockInPushInput(BaseModel):
+    """生产领料单下推入库输入"""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    bill_nos: List[str] = Field(description="源单生产领料单编号列表")
+    rule_id: Optional[str] = Field(default=None)
+    draft_on_fail: bool = Field(default=True)
+
+
+@mcp.tool(
+    name="kingdee_push_production_stock_in",
+    annotations={"title": "生产领料单下推入库单", "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False}
+)
+async def kingdee_push_production_stock_in(params: ProductionStockInPushInput) -> str:
+    """从生产领料单下推生成生产入库单（PRD_Instock）。
+
+    Returns:
+        str: JSON，含 success / target_bill_nos / next_action
+    """
+    try:
+        result = await _post_raw(
+            "push", "PRD_PickMtrl", {"Ids": params.bill_nos},
+            target_form_id="PRD_Instock",
+            rule_id=params.rule_id,
+            draft_on_fail=params.draft_on_fail,
+        )
+        status_data = _result_status(result, "push")
+        if status_data.get("success"):
+            status_data["next_action"] = "kingdee_submit_bills + kingdee_audit_bills"
+            status_data["tip"] = "入库单审核时增加即时库存"
+        return _fmt(status_data)
+    except Exception as e:
+        return _err(e, op="push")
 
 
 # ─────────────────────────────────────────────

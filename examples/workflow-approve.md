@@ -66,6 +66,19 @@
 }
 ```
 
+## 返回结果（结构化格式）
+
+```json
+{
+  "action": "审批通过",
+  "op": "audit",
+  "success": true,
+  "bill_id": "100015",
+  "opinion": "同意",
+  "tip": "单据已审核生效。如需修改，请先调用 kingdee_unaudit_bills 反审核"
+}
+```
+
 ## 用户提问（驳回）
 
 ```

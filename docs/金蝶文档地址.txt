@@ -1,0 +1,3 @@
+https://openapi.open.kingdee.com/ApiDoc
+https://help.open.kingdee.com/dokuwiki/doku.php
+https://vip.kingdee.com/?productId=1&productLineId=1&lang=zh-CN

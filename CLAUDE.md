@@ -28,10 +28,16 @@ Run tests:
 python -m pytest tests/ -v
 
 # Integration tests (requires Kingdee server + env vars)
+# Tip: Credentials are stored in C:\Users\ZnL\kingdee-mcp.bat for reference
 KINGDEE_SERVER_URL=http://your-server/k3cloud/ \
 KINGDEE_ACCT_ID=... KINGDEE_USERNAME=... \
 KINGDEE_APP_ID=... KINGDEE_APP_SEC=... \
+KINGDEE_LCID=2052 \
 python -m pytest tests/test_integration.py -v
+
+# End-to-end workflow tests (requires real Kingdee env, same vars as above)
+# Auto-skipped when KINGDEE_* env vars are absent — never commit credentials in source.
+python -m pytest tests/e2e -v -m e2e
 ```
 
 ## Architecture
@@ -78,11 +84,47 @@ This is a single-file MCP Server (`src/kingdee_mcp/server.py`) that bridges AI c
 | `MCP_SQLSERVER_USER` | SQL Server user (read-only recommended) |
 | `MCP_SQLSERVER_PASSWORD` | SQL Server password |
 
-### GitHub Pages (`docs/`)
+### 自动记忆约定
+
+### 代码注释格式（💡 REMEMBER）
+代码中发现值得记忆的内容时，用以下格式标记：
+```python
+# 💡 REMEMBER: <简短描述>
+# 💡 REMEMBER: <简短描述> — <根因/结论>
+```
+示例：
+```python
+# 💡 REMEMBER: httpx 0.28+ 默认 HTTP/2，金蝶不支持，必须显式传 http1=True，否则全 502
+# 💡 REMEMBER: demo 环境 FLinkQty 不存在 — 用 FReceiveQty+FStockInQty 代替
+```
+
+### 提取脚本
+```bash
+python scripts/extract_remember.py   # 扫描并打印所有记忆条目
+python scripts/extract_remember.py --update  # 追加到记忆文件
+```
+
+### 会话结束检查
+每次长会话结束时，AI 应主动问：
+> "这次有哪些发现需要记忆？"
+
+## GitHub Pages (`docs/`)
 
 The website at `https://wahailong.github.io/KingdeeMCP/` is a single static HTML file (`docs/index.html`). The deploy workflow (`.github/workflows/deploy-pages.yml`) triggers on push to `main` branch.
 
 ### Examples (`examples/`)
 
 Business scenario examples showing how to use each tool. See `examples/README.md` for the full list. Useful as reference when helping users with Kingdee MCP queries.
+
+### Workflow Hints (`examples/workflow-hints.md`)
+
+> **按需检索，不是静态入口。** 按需检索的上下文片段，按操作类型分组（新建/下推/修改/审批）。
+
+关键内容：
+- 单据生命周期状态机（Save→Submit→Audit）
+- 写操作的完整流程（含 next_action 字段说明）
+- 常见错误模式及处理（字段不存在/关联数量已达上限等）
+- 操作返回的结构化字段含义
+
+AI 执行具体任务时，按需参考此文件，不要一次性读完所有示例。
 

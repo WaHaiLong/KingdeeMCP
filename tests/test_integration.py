@@ -150,11 +150,14 @@ class TestWriteIntegration:
             BillIdsInput(form_id="PUR_PurchaseOrder", bill_ids=["999999999"])
         )
         parsed = json.loads(result)
-        # Kingdee API 返回 {"Result": {"ResponseStatus": {...}}}
-        assert "Result" in parsed
-        assert "ResponseStatus" in parsed["Result"]
-        # 验证 IsSuccess 为 false（不存在的单据）
-        assert parsed["Result"]["ResponseStatus"]["IsSuccess"] is False
+        # 新格式：op/success/response_status/error_fields
+        assert parsed["op"] == "audit"
+        assert parsed["success"] is False
+        assert "response_status" in parsed
+        assert parsed["response_status"]["IsSuccess"] is False
+        # errors 包含业务错误详情
+        assert "errors" in parsed
+        assert len(parsed["errors"]) > 0
 
     @pytest.mark.asyncio
     async def test_view_with_invalid_bill_id(self):

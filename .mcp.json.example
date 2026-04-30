@@ -8,7 +8,8 @@
         "KINGDEE_ACCT_ID": "your-acct-id",
         "KINGDEE_USERNAME": "your-username",
         "KINGDEE_APP_ID": "your-app-id",
-        "KINGDEE_APP_SEC": "your-app-secret"
+        "KINGDEE_APP_SEC": "your-app-secret",
+        "KINGDEE_LCID": "2052"
       }
     }
   }

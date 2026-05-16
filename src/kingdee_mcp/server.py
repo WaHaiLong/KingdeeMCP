@@ -6,6 +6,7 @@ SQL Server 探查：系统目录只读查询，辅助理解数据库结构（可
 Harness 层：操作链约束（harness/）、反馈循环、结构化退出条件、失败追溯
 """
 
+import asyncio
 import json
 import os
 import re
@@ -253,9 +254,6 @@ def _err(e: Exception, extra_errors: list = None, op: str = "") -> str:
 
     return _fmt(result)
 
-
-def _fmt(data: Any) -> str:
-    return json.dumps(data, ensure_ascii=False, indent=2)
 
 # ─────────────────────────────────────────────
 # 服务器初始化
@@ -976,6 +974,21 @@ def _rows(result: Any) -> list:
     if isinstance(result, list):
         return result
     return result.get("Result", result.get("data", []))
+
+
+# SQL LIKE 模式转义，防止通配符注入
+def _escape_sql_like(value: str) -> str:
+    return value.replace("'", "''").replace("[", "[[]").replace("%", "[%]").replace("_", "[_]")
+
+
+# Session 并发登录锁，防止多协程同时触发 _login()
+_session_lock: asyncio.Lock = None  # 在第一次事件循环启动后惰性初始化
+
+def _get_session_lock() -> asyncio.Lock:
+    global _session_lock
+    if _session_lock is None:
+        _session_lock = asyncio.Lock()
+    return _session_lock
 
 
 def _fmt(data: Any) -> str:
@@ -1796,12 +1809,25 @@ async def kingdee_submit_bills(params: BillIdsInput) -> str:
         str: JSON，含 success / next_action / bill_ids 字段
     """
     try:
-        result = await _post_raw("submit", params.form_id, {"Ids": params.bill_ids})
-        status_data = _result_status(result, "submit")
-        if status_data.get("success"):
-            status_data["bill_ids"] = params.bill_ids
-            status_data["tip"] = "单据已提交，请在审核通过后调用 kingdee_audit_bills 审核"
-        return _fmt(status_data)
+        succeeded, failed = [], []
+        for bill_id in params.bill_ids:
+            try:
+                r = await _post_raw("submit", params.form_id, {"Ids": bill_id})
+                s = _result_status(r, "submit")
+                if s.get("success"):
+                    succeeded.append(bill_id)
+                else:
+                    failed.append({"id": bill_id, "errors": s.get("errors", [])})
+            except Exception as ex:
+                failed.append({"id": bill_id, "error": f"{type(ex).__name__}: {ex}"[:300]})
+        return _fmt({
+            "op": "submit", "success": len(failed) == 0,
+            "total": len(params.bill_ids),
+            "succeeded_count": len(succeeded), "failed_count": len(failed),
+            "succeeded_ids": succeeded, "failed_details": failed,
+            "next_action": "audit" if len(succeeded) > 0 else None,
+            "next_action_desc": "建议调用 kingdee_audit_bills 审核已提交单据" if succeeded else None,
+        })
     except Exception as e:
         return _err(e, op="submit")
 
@@ -1820,12 +1846,24 @@ async def kingdee_audit_bills(params: BillIdsInput) -> str:
         str: JSON，含 success / bill_ids 字段
     """
     try:
-        result = await _post_raw("audit", params.form_id, {"Ids": params.bill_ids})
-        status_data = _result_status(result, "audit")
-        if status_data.get("success"):
-            status_data["bill_ids"] = params.bill_ids
-            status_data["tip"] = "单据已审核生效。如需修改，请先调用 kingdee_unaudit_bills 反审核"
-        return _fmt(status_data)
+        succeeded, failed = [], []
+        for bill_id in params.bill_ids:
+            try:
+                r = await _post_raw("audit", params.form_id, {"Ids": bill_id})
+                s = _result_status(r, "audit")
+                if s.get("success"):
+                    succeeded.append(bill_id)
+                else:
+                    failed.append({"id": bill_id, "errors": s.get("errors", [])})
+            except Exception as ex:
+                failed.append({"id": bill_id, "error": f"{type(ex).__name__}: {ex}"[:300]})
+        return _fmt({
+            "op": "audit", "success": len(failed) == 0,
+            "total": len(params.bill_ids),
+            "succeeded_count": len(succeeded), "failed_count": len(failed),
+            "succeeded_ids": succeeded, "failed_details": failed,
+            "tip": "单据已审核生效。如需修改，请先调用 kingdee_unaudit_bills 反审核" if succeeded else None,
+        })
     except Exception as e:
         return _err(e, op="audit")
 
@@ -1844,12 +1882,24 @@ async def kingdee_unaudit_bills(params: BillIdsInput) -> str:
         str: JSON，含 success / bill_ids 字段
     """
     try:
-        result = await _post_raw("unaudit", params.form_id, {"Ids": params.bill_ids})
-        status_data = _result_status(result, "unaudit")
-        if status_data.get("success"):
-            status_data["bill_ids"] = params.bill_ids
-            status_data["tip"] = "单据已反审核，可修改后重新提交+审核"
-        return _fmt(status_data)
+        succeeded, failed = [], []
+        for bill_id in params.bill_ids:
+            try:
+                r = await _post_raw("unaudit", params.form_id, {"Ids": bill_id})
+                s = _result_status(r, "unaudit")
+                if s.get("success"):
+                    succeeded.append(bill_id)
+                else:
+                    failed.append({"id": bill_id, "errors": s.get("errors", [])})
+            except Exception as ex:
+                failed.append({"id": bill_id, "error": f"{type(ex).__name__}: {ex}"[:300]})
+        return _fmt({
+            "op": "unaudit", "success": len(failed) == 0,
+            "total": len(params.bill_ids),
+            "succeeded_count": len(succeeded), "failed_count": len(failed),
+            "succeeded_ids": succeeded, "failed_details": failed,
+            "tip": "已反审核，可修改后重新提交+审核" if succeeded else None,
+        })
     except Exception as e:
         return _err(e, op="unaudit")
 
@@ -1868,12 +1918,24 @@ async def kingdee_delete_bills(params: BillIdsInput) -> str:
         str: JSON，含 success / bill_ids 字段
     """
     try:
-        result = await _post_raw("delete", params.form_id, {"Ids": params.bill_ids})
-        status_data = _result_status(result, "delete")
-        if status_data.get("success"):
-            status_data["bill_ids"] = params.bill_ids
-            status_data["tip"] = "单据已删除。如需恢复，请重新创建"
-        return _fmt(status_data)
+        succeeded, failed = [], []
+        for bill_id in params.bill_ids:
+            try:
+                r = await _post_raw("delete", params.form_id, {"Ids": bill_id})
+                s = _result_status(r, "delete")
+                if s.get("success"):
+                    succeeded.append(bill_id)
+                else:
+                    failed.append({"id": bill_id, "errors": s.get("errors", [])})
+            except Exception as ex:
+                failed.append({"id": bill_id, "error": f"{type(ex).__name__}: {ex}"[:300]})
+        return _fmt({
+            "op": "delete", "success": len(failed) == 0,
+            "total": len(params.bill_ids),
+            "succeeded_count": len(succeeded), "failed_count": len(failed),
+            "succeeded_ids": succeeded, "failed_details": failed,
+            "tip": "已删除成功的单据不可恢复，请重新创建" if succeeded else None,
+        })
     except Exception as e:
         return _err(e, op="delete")
 
@@ -2221,27 +2283,26 @@ async def kingdee_push_and_audit(params: PushAndAuditInput) -> str:
         out["errors"] = [{"message": "Push response missing Ids"}]
         return _fmt(out)
 
-    # Step 2: Submit (batch)
-    try:
-        submit_result = await _post_raw("submit", params.target_form_id, {"Ids": target_fids})
-    except Exception as e:
-        steps.append({"op": "submit", "success": False, "exception": f"{type(e).__name__}: {e}"})
-        out["halted_at"] = "submit"
-        out["recovery_hint"] = (
-            f"已下推目标草稿 fids={target_fids}。Submit 抛异常。"
-            f"手动 kingdee_submit_bills(form_id=\"{params.target_form_id}\", bill_ids={target_fids}) 重试。"
-        )
-        return _err(e, extra_errors=[{"step": "submit", "stage_summary": out}], op="push_and_audit")
-
-    submit_status = _result_status(submit_result, "submit")
-    step_submit = {"op": "submit", "success": submit_status.get("success", False)}
-    if not submit_status.get("success"):
-        step_submit["errors"] = submit_status.get("errors", [])
+    # Step 2: Submit（逐条，因金蝶 API 每次只接受单个 Ids）
+    submit_succeeded, submit_failed = [], []
+    for fid in target_fids:
+        try:
+            r = await _post_raw("submit", params.target_form_id, {"Ids": fid})
+            s = _result_status(r, "submit")
+            if s.get("success"):
+                submit_succeeded.append(fid)
+            else:
+                submit_failed.append({"id": fid, "errors": s.get("errors", [])})
+        except Exception as ex:
+            submit_failed.append({"id": fid, "error": f"{type(ex).__name__}: {ex}"[:300]})
+    step_submit = {"op": "submit", "success": len(submit_failed) == 0,
+                   "succeeded": submit_succeeded, "failed": submit_failed}
+    if not step_submit["success"]:
         steps.append(step_submit)
         out["halted_at"] = "submit"
-        out["errors"] = submit_status.get("errors", [])
+        out["errors"] = submit_failed
         out["recovery_hint"] = (
-            f"目标草稿已生成 fids={target_fids}。Submit 失败：检查 errors[].matched.suggestion。"
+            f"目标草稿已生成 fids={target_fids}。Submit 部分或全部失败：检查 failed[].errors。"
         )
         try:
             from scripts.failure_log import FailureLogger
@@ -2251,27 +2312,27 @@ async def kingdee_push_and_audit(params: PushAndAuditInput) -> str:
         return _fmt(out)
     steps.append(step_submit)
 
-    # Step 3: Audit (batch)
-    try:
-        audit_result = await _post_raw("audit", params.target_form_id, {"Ids": target_fids})
-    except Exception as e:
-        steps.append({"op": "audit", "success": False, "exception": f"{type(e).__name__}: {e}"})
-        out["halted_at"] = "audit"
-        out["recovery_hint"] = (
-            f"已 Push+Submit 目标单 fids={target_fids}。Audit 抛异常。"
-            f"手动 kingdee_audit_bills(form_id=\"{params.target_form_id}\", bill_ids={target_fids}) 重试。"
-        )
-        return _err(e, extra_errors=[{"step": "audit", "stage_summary": out}], op="push_and_audit")
-
-    audit_status = _result_status(audit_result, "audit")
-    step_audit = {"op": "audit", "success": audit_status.get("success", False)}
-    if not audit_status.get("success"):
-        step_audit["errors"] = audit_status.get("errors", [])
+    # Step 3: Audit（逐条）
+    audit_ids = submit_succeeded
+    audit_succeeded, audit_failed = [], []
+    for fid in audit_ids:
+        try:
+            r = await _post_raw("audit", params.target_form_id, {"Ids": fid})
+            s = _result_status(r, "audit")
+            if s.get("success"):
+                audit_succeeded.append(fid)
+            else:
+                audit_failed.append({"id": fid, "errors": s.get("errors", [])})
+        except Exception as ex:
+            audit_failed.append({"id": fid, "error": f"{type(ex).__name__}: {ex}"[:300]})
+    step_audit = {"op": "audit", "success": len(audit_failed) == 0,
+                  "succeeded": audit_succeeded, "failed": audit_failed}
+    if not step_audit["success"]:
         steps.append(step_audit)
         out["halted_at"] = "audit"
-        out["errors"] = audit_status.get("errors", [])
+        out["errors"] = audit_failed
         out["recovery_hint"] = (
-            f"已 Push+Submit 目标单 fids={target_fids}。Audit 失败：检查 errors[].matched.suggestion；"
+            f"已 Push+Submit 目标单 fids={target_fids}。Audit 部分或全部失败：检查 failed[].errors；"
             f"修正后调用 kingdee_audit_bills 重试。"
         )
         try:
@@ -2346,8 +2407,8 @@ def _system_query_payload(form_id: str, field_keys: str, filter_string: str, sta
     return [form_id, {"FieldKeys": field_keys, "FilterString": filter_string, "StartRow": start_row, "Limit": limit}]
 
 
-def _post_system(ep_key: str, form_id: str, field_keys: str, filter_string: str, start_row: int, limit: int) -> Any:
-    return _post(ep_key, _system_query_payload(form_id, field_keys, filter_string, start_row, limit))
+async def _post_system(ep_key: str, form_id: str, field_keys: str, filter_string: str, start_row: int, limit: int) -> Any:
+    return await _post(ep_key, _system_query_payload(form_id, field_keys, filter_string, start_row, limit))
 
 
 @mcp.tool(
@@ -4751,12 +4812,12 @@ async def kingdee_push_production_pick(params: ProductionPickPushInput) -> str:
         str: JSON，含 success / target_bill_nos / next_action
     """
     try:
-        result = await _post_raw(
-            "push", "PRD_MO", {"Ids": params.bill_nos},
-            target_form_id="PRD_PickMtrl",
-            rule_id=params.rule_id,
-            draft_on_fail=params.draft_on_fail,
-        )
+        push_data: dict[str, Any] = {"TargetFormId": "PRD_PickMtrl", "Numbers": params.bill_nos}
+        if params.rule_id:
+            push_data["RuleId"] = params.rule_id
+        if params.draft_on_fail:
+            push_data["IsDraftWhenSaveFail"] = "true"
+        result = await _post_raw("push", "PRD_MO", push_data)
         status_data = _result_status(result, "push")
         if status_data.get("success"):
             status_data["next_action"] = "kingdee_submit_bills + kingdee_audit_bills"
@@ -4786,12 +4847,12 @@ async def kingdee_push_production_stock_in(params: ProductionStockInPushInput) -
         str: JSON，含 success / target_bill_nos / next_action
     """
     try:
-        result = await _post_raw(
-            "push", "PRD_PickMtrl", {"Ids": params.bill_nos},
-            target_form_id="PRD_Instock",
-            rule_id=params.rule_id,
-            draft_on_fail=params.draft_on_fail,
-        )
+        push_data: dict[str, Any] = {"TargetFormId": "PRD_Instock", "Numbers": params.bill_nos}
+        if params.rule_id:
+            push_data["RuleId"] = params.rule_id
+        if params.draft_on_fail:
+            push_data["IsDraftWhenSaveFail"] = "true"
+        result = await _post_raw("push", "PRD_PickMtrl", push_data)
         status_data = _result_status(result, "push")
         if status_data.get("success"):
             status_data["next_action"] = "kingdee_submit_bills + kingdee_audit_bills"

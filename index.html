@@ -886,8 +886,8 @@
                 <path d="M3 9h18M9 21V9"/>
               </svg>
             </div>
-            <h3>13+ 实用工具</h3>
-            <p>涵盖采购、销售、库存、基础资料等核心业务模块，开箱即用。</p>
+            <h3>86 个实用工具</h3>
+            <p>覆盖生产、成本、资产、审计、采购、销售、库存等 13 大业务域，开箱即用。</p>
           </div>
           <div class="feature-card">
             <div class="feature-icon">
@@ -896,7 +896,7 @@
               </svg>
             </div>
             <h3>安全认证</h3>
-            <p>采用金蝶官方 WebAPI 认证，支持 AppSecret 方式登录，凭证本地存储。</p>
+            <p>采用金蝶 WebAPI 认证，账号密码(ValidateUser)方式登录，凭证本地存储。</p>
           </div>
           <div class="feature-card">
             <div class="feature-icon">
@@ -938,7 +938,7 @@
       <div class="container">
         <div class="section-header">
           <h2>支持的工具列表</h2>
-          <p>共 13 个工具，覆盖核心业务场景</p>
+          <p>核心工具示例（共 86 个，覆盖 13 大业务域）</p>
         </div>
         <div class="tools-grid">
           <div class="tool-card">
@@ -1034,9 +1034,9 @@
           <div class="install-step">
             <div class="step-number">2</div>
             <div class="step-content">
-              <h3>金蝶后台授权</h3>
-              <p>在金蝶云星空中创建集成用户并生成应用凭证。</p>
-              <p>进入 <strong>系统管理 → 第三方系统登录授权 → 新增</strong>，新建一个集成用户（不要用 Administrator），然后生成应用ID和应用密钥。</p>
+              <h3>准备金蝶账号</h3>
+              <p>准备一个金蝶云星空账号（建议专用集成账号，不要用 Administrator）。</p>
+              <p>本服务采用<strong>账号密码(ValidateUser)</strong>登录，无需在「第三方系统登录授权」中创建应用、也无需 AppID / AppSecret，只要该账号有对应模块的操作权限即可。</p>
             </div>
           </div>
           <div class="install-step">
@@ -1053,9 +1053,8 @@
       "env": {
         "KINGDEE_SERVER_URL": "http://your-server/k3cloud/",
         "KINGDEE_ACCT_ID": "your_acct_id",
-        "KINGDEE_USERNAME": "API集成",
-        "KINGDEE_APP_ID": "your_app_id",
-        "KINGDEE_APP_SEC": "your_app_secret"
+        "KINGDEE_USERNAME": "金蝶账号",
+        "KINGDEE_PASSWORD": "金蝶账号密码"
       }
     }
   }
@@ -1191,7 +1190,7 @@
         <div class="faq-list">
           <div class="faq-item">
             <div class="faq-question">Q: 提示认证失败怎么办？</div>
-            <div class="faq-answer">检查 AppID / AppSec 是否正确，集成用户是否有对应模块的访问权限。建议先在金蝶后台测试 API 是否正常。</div>
+            <div class="faq-answer">检查金蝶账号与密码(KINGDEE_PASSWORD)是否正确，该账号是否有对应模块的操作权限。建议先在金蝶后台测试 API 是否正常。</div>
           </div>
           <div class="faq-item">
             <div class="faq-question">Q: 连接超时怎么解决？</div>

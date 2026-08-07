@@ -14,11 +14,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from kingdee_mcp.server import (
     kingdee_query_purchase_orders, kingdee_query_sale_orders,
     kingdee_query_bills, kingdee_view_bill,
+    kingdee_query_outsource_orders,
     kingdee_save_bill, kingdee_audit_bills, kingdee_submit_bills,
     kingdee_unaudit_bills, kingdee_delete_bills, kingdee_push_bill,
     kingdee_create_and_audit, kingdee_push_and_audit,
     QueryInput, ViewInput, SaveInput, BillIdsInput, PushDownInput,
     CreateAndAuditInput, PushAndAuditInput,
+    OutsourceOrderQueryInput,
 )
 
 
@@ -569,3 +571,63 @@ class TestPushAndAudit:
             e.get("matched", {}).get("next_action_tool") == "kingdee_query_purchase_order_progress"
             for e in parsed["errors"]
         )
+
+
+# ─── kingdee_query_outsource_orders ───────────────────────────
+
+class TestQueryOutsourceOrders:
+    @pytest.mark.asyncio
+    async def test_returns_formatted_json(self):
+        api_result = {
+            "Result": [
+                {"FID": "1", "FBillNo": "APTWW250500030", "FSupplierId.FName": "华力微电子",
+                 "FMaterialId.FSpecification": "APT32F004B", "FNoStockInQty": 163668.0,
+                 "FQty": 982008.0, "FStatus": "3"},
+                {"FID": "2", "FBillNo": "APTWW250800044", "FSupplierId.FName": "嘉兆电子",
+                 "FMaterialId.FSpecification": "APT32F004B", "FNoStockInQty": 81834.0,
+                 "FQty": 81834.0, "FStatus": "3"},
+            ]
+        }
+        with patch("kingdee_mcp.server._post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = api_result
+            result = await kingdee_query_outsource_orders(
+                OutsourceOrderQueryInput()
+            )
+        parsed = json.loads(result)
+        assert parsed["count"] == 2
+        assert parsed["data"][0]["FBillNo"] == "APTWW250500030"
+
+    @pytest.mark.asyncio
+    async def test_has_more_when_limit_reached(self):
+        api_result = {"Result": [{"FID": str(i)} for i in range(20)]}
+        with patch("kingdee_mcp.server._post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = api_result
+            result = await kingdee_query_outsource_orders(
+                OutsourceOrderQueryInput(limit=20)
+            )
+        parsed = json.loads(result)
+        assert parsed["has_more"] is True
+
+    @pytest.mark.asyncio
+    async def test_no_more_when_under_limit(self):
+        api_result = {"Result": [{"FID": str(i)} for i in range(5)]}
+        with patch("kingdee_mcp.server._post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = api_result
+            result = await kingdee_query_outsource_orders(
+                OutsourceOrderQueryInput(limit=20)
+            )
+        parsed = json.loads(result)
+        assert parsed["has_more"] is False
+
+    @pytest.mark.asyncio
+    async def test_empty_result(self):
+        api_result = {"Result": []}
+        with patch("kingdee_mcp.server._post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = api_result
+            result = await kingdee_query_outsource_orders(
+                OutsourceOrderQueryInput()
+            )
+        parsed = json.loads(result)
+        assert parsed["count"] == 0
+        assert parsed["data"] == []
+

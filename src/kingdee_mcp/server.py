@@ -1499,24 +1499,24 @@ FORM_CATALOG = {
     "AR_Receivable": {
         "name": "应收单/收款单",
         "alias": ["应收", "应收单", "收款单", "回款", "应收账款", "营收", "现金回款", "票据回款"],
-        "desc": "记录客户实际付款的收款凭证，包含实收金额、结算方式（现金/银行转账/"
-                "商业承兑汇票/银行承兑汇票）和核销金额。"
-                "是营收、回款、应收余额、票据占比等财务指标的核心数据来源。",
+        "desc": "记录客户应收账款，包含应收金额、已核销金额和核销状态。"
+                "是营收、回款、应收余额等财务指标的核心数据来源。"
+                "注：不同金蝶账套字段名可能不同（如 FCUSTOMERID vs FCustId），"
+                "先调用 kingdee_get_fields 确认可用字段。",
         "fields": (
-            "FID,FBillNo,FDate,FDocumentStatus,"
-            "FCustId.FName,FCustId.FNumber,"
-            "FRealAmt,FWriteOffAmt,"
-            "FSettleTypeId.FName,FAccountId.FName,"
-            "FExchangeRate,FCurrencyId.FName,"
-            "FSaleOrgId.FName,FCloseStatus"
+            "FID,FBillNo,FDATE,FDocumentStatus,"
+            "FCUSTOMERID.FName,FCUSTOMERID.FNumber,"
+            "FALLAMOUNTFOR,FNOTAXAMOUNTFOR,FRELATEHADPAYAMOUNT,"
+            "FWRITTENOFFSTATUS,FOPENSTATUS,FENDDATE_H,"
+            "FSETTLEORGID.FName,FISINIT"
         ),
         "db_tables": ("T_AR_RECEIVABLE", "T_AR_RECEIVABLEENTRY"),
         "common_filters": [
             "FDocumentStatus='C'                           # 已审核",
-            "FDate>='2026-01-01' and FDate<='2026-01-31'  # 指定月份",
-            "FCloseStatus='A'                              # 未关闭（核销未完成）",
-            "FSettleTypeId.FName like '%承兑汇票%'          # 票据回款",
-            "FSettleTypeId.FName like '%转账%' or FSettleTypeId.FName like '%现金%'  # 现金/转账回款",
+            "FDATE>='2026-01-01' and FDATE<='2026-01-31'  # 指定月份",
+            "FWRITTENOFFSTATUS='A'                         # 未核销",
+            "FOPENSTATUS='A'                               # 未关闭",
+            "FISINIT=false                                 # 业务单据（排除期初）",
         ],
     },
 
@@ -2427,24 +2427,29 @@ class ReceiptQueryInput(BaseModel):
     filter_string: str = Field(
         default="FDocumentStatus='C'",
         description=(
-            "过滤条件，默认只查已审核收款单。"
+            "过滤条件，默认只查已审核应收单。"
             "示例："
-            "\"FDate>='2026-01-01' and FDate<='2026-01-31'\"（指定月份）、"
-            "\"FCustId.FNumber='C001'\"（指定客户）、"
-            "\"FSettleTypeId.FName like '%承兑汇票%'\"（票据回款）、"
-            "\"FCloseStatus='A'\"（核销未完成）"
+            "\"FDATE>='2026-01-01' and FDATE<='2026-01-31'\"（指定月份）、"
+            "\"FCUSTOMERID.FNumber='C001'\"（指定客户）、"
+            "\"FWRITTENOFFSTATUS='A'\"（未核销）、"
+            "\"FOPENSTATUS='A'\"（未关闭）"
+            "\n⚠️ 不同金蝶账套字段名可能不同（如 FCUSTOMERID vs FCustId），"
+            "先调用 kingdee_get_fields('AR_Receivable') 确认可用字段。"
         ),
     )
     field_keys: str = Field(
         default=(
-            "FID,FBillNo,FDate,FDocumentStatus,"
-            "FCustId.FName,FCustId.FNumber,"
-            "FRealAmt,FWriteOffAmt,"
-            "FSettleTypeId.FName,FAccountId.FName,"
-            "FExchangeRate,FCurrencyId.FName,"
-            "FSaleOrgId.FName"
+            "FID,FBillNo,FDATE,FDocumentStatus,"
+            "FCUSTOMERID.FName,FCUSTOMERID.FNumber,"
+            "FALLAMOUNTFOR,FNOTAXAMOUNTFOR,FRELATEHADPAYAMOUNT,"
+            "FWRITTENOFFSTATUS,FOPENSTATUS,FENDDATE_H,"
+            "FSETTLEORGID.FName,FISINIT"
         ),
-        description="返回字段，逗号分隔",
+        description=(
+            "返回字段，逗号分隔。"
+            "⚠️ 不同金蝶账套字段名可能不同（如 FCUSTOMERID vs FCustId），"
+            "先调用 kingdee_get_fields('AR_Receivable') 确认可用字段。"
+        ),
     )
     start_row: int = Field(default=0, ge=0)
     limit: int = Field(default=20, ge=1, le=100)
@@ -2788,28 +2793,30 @@ async def kingdee_query_inventory(params: InventoryQueryInput) -> str:
                  "idempotentHint": True, "openWorldHint": False}
 )
 async def kingdee_query_receipts(params: ReceiptQueryInput) -> str:
-    """查询收款单（AR_Receivable）列表。
+    """查询应收单（AR_Receivable）列表，支持按客户、日期、核销状态、打开状态过滤。
 
-    收款单记录客户实际付款信息，包含实收金额、结算方式（现金/银行转账/承兑汇票等）
-    和核销金额，是营收、回款、应收余额、票据占比等财务指标的核心数据来源。
+    应收单记录客户应收账款，包含应收金额、已核销金额、核销状态等信息，
+    是营收、回款、应收余额、票据占比等财务指标的核心数据来源。
 
     常用 filter_string：
     - 已审核：        "FDocumentStatus='C'"（默认）
-    - 指定客户：      "FCustId.FNumber='C001'"
-    - 指定月份：      "FDate>='2026-01-01' and FDate<='2026-01-31'"
-    - 票据回款：      "FSettleTypeId.FName like '%承兑汇票%'"
-    - 现金/转账回款： "FSettleTypeId.FName like '%现金%' or FSettleTypeId.FName like '%转账%'"
-    - 核销未完成：    "FCloseStatus='A'"
+    - 指定客户：      "FCUSTOMERID.FNumber='C001'"
+    - 指定月份：      "FDATE>='2026-01-01' and FDATE<='2026-01-31'"
+    - 未核销：        "FWRITTENOFFSTATUS='A'"
+    - 未关闭：        "FOPENSTATUS='A'"
+    - 期初数据：      "FISINIT=true"（初始化单）或 "FISINIT=false"（业务单）
 
     关键字段说明：
-    - FRealAmt：       实收金额（本次实际到账金额，财务核心指标）
-    - FWriteOffAmt：   已核销金额（已匹配到应收账款的金额）
-    - FSettleTypeId：  结算方式（现金/银行转账/商业承兑汇票/银行承兑汇票）
-    - FAccountId：     收款账户（收款银行账户名称）
-    - FExchangeRate：  汇率（多币别收款时使用）
-    - FCloseStatus：   关闭状态（A=未关闭/核销中，B=已关闭/全额核销）
+    - FALLAMOUNTFOR：     应收总金额（原币含税），财务核心指标
+    - FNOTAXAMOUNTFOR：   应收不含税金额（原币），用于综合毛利率计算
+    - FRELATEHADPAYAMOUNT：已核销金额
+    - FWRITTENOFFSTATUS： 核销状态（A=未核销，B=部分核销，C=完全核销）
+    - FOPENSTATUS：       打开状态（A=未关闭，B=已关闭，C=部分关闭）
+    - FENDDATE_H：        到期日
+    - FISINIT：           是否为初始化单据（期初数据）
 
-    💡 REMEMBER: 若报"字段不存在"，用 kingdee_get_fields('AR_Receivable') 确认该账套可用字段
+    ⚠️ 不同金蝶账套字段名可能不同（如 FCUSTOMERID 可能为 FCustId、FDate 可能为 FDATE），
+    先调用 kingdee_get_fields('AR_Receivable') 确认该账套可用字段。
 
     Returns:
         str: JSON，含 count / has_more / data 字段
@@ -2817,7 +2824,7 @@ async def kingdee_query_receipts(params: ReceiptQueryInput) -> str:
     try:
         result = await _post("query", _query_payload(
             "AR_Receivable", params.field_keys, params.filter_string,
-            "FDate DESC,FBillNo DESC", params.start_row, params.limit
+            "FDATE DESC,FBillNo DESC", params.start_row, params.limit
         ))
         rows = _rows(result)
         return _fmt({

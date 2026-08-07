@@ -13,6 +13,7 @@
 ### Added（新增）
 
 - **远程传输支持（HTTP / SSE / Streamable HTTP）**：`main()` 新增 `--transport`（stdio/sse/streamable-http，默认 stdio）、`--host`、`--port` 参数，并支持同名环境变量 `KINGDEE_MCP_TRANSPORT` / `KINGDEE_MCP_HOST` / `KINGDEE_MCP_PORT`。现在可将服务以 SSE（`/sse`）或 Streamable HTTP（`/mcp`）模式运行，便于部署到服务器或网关平台远程调用、免客户端安装。兼容老版本 mcp（<1.9 不支持 streamable-http 时自动回退 sse）。
+- **`kingdee_query_receipts`**：查询收款单（`AR_Receivable`）。支持按客户、日期、结算方式（现金/转账/商业承兑汇票/银行承兑汇票）、核销状态过滤。关键字段：`FRealAmt`（实收金额）、`FWriteOffAmt`（已核销金额）、`FSettleTypeId.FName`（结算方式）、`FAccountId.FName`（收款账户）。适用于营收统计、回款分析、应收余额、票据占比等财务指标查询。同步完善 `FORM_CATALOG` 中 `AR_Receivable` 的字段说明、业务描述与常用过滤示例。新增 `examples/ar-receivable-query.md`。
 
 ---
 

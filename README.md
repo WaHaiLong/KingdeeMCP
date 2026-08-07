@@ -55,7 +55,7 @@ AI 会自动调用金蝶 API 完成操作，无需手动登录 ERP 界面。
 
 ## 功能特性
 
-- **87 个工具**：覆盖生产、成本、资产、审计、采购、销售、库存、财务报表等 13+ 大业务域
+- **88 个工具**：覆盖生产、成本、资产、审计、采购、销售、库存、财务等 13+ 大业务域
 - **元数据动态查询**：`get_bill_template` / `validate_bill` / `refresh_metadata`，元数据本地缓存
 - **4 个 SQL Server 探查工具**：搜索表、搜索字段、查看表结构、金蝶元数据候选发现
 - **自然语言操作**：用中文直接描述需求，AI 自动转换为 API 调用
@@ -170,7 +170,7 @@ uvx kingdee-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 
 ## 可用工具列表
 
-共 **87 个工具**，按业务域分组（每组列出代表性工具，完整清单见 `src/kingdee_mcp/server.py`）：
+共 **88 个工具**，按业务域分组（每组列出代表性工具，完整清单见 `src/kingdee_mcp/server.py`）：
 
 | 业务域 | 数量 | 代表性工具 |
 |--------|------|-----------|
@@ -188,6 +188,7 @@ uvx kingdee-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 | 系统/查询 | 4 | `kingdee_query_system_config` · `kingdee_query_quality_inspections` · `kingdee_query_expense_reimburse` |
 | 统计 | 2 | `kingdee_usage_stats` · `kingdee_usage_report` |
 | 财务报表 | 1 | `kingdee_query_report`（GetSysReportData 专用端点，查科目余额表/账龄分析表等总账报表） |
+| 财务收款 | 1 | `kingdee_query_receipts`（收款单 AR_Receivable：实收金额/结算方式/核销金额） |
 
 > 元数据探查含 4 个 SQL Server 工具（`kingdee_discover_tables` / `kingdee_discover_columns` / `kingdee_describe_table` / `kingdee_discover_metadata_candidates`），需配置 `MCP_SQLSERVER_*` 环境变量。
 
@@ -209,6 +210,7 @@ uvx kingdee-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 | `kingdee_query_sale_quotations` | 查询销售报价单（SAL_Quotation） |
 | `kingdee_query_stock_bills` | 查询出入库单据 |
 | `kingdee_query_inventory` | 查询即时库存 |
+| `kingdee_query_receipts` | 查询收款单（AR_Receivable）：实收金额、结算方式（现金/转账/承兑汇票）、核销金额，营收/回款/应收余额核心数据源 |
 | `kingdee_query_materials` | 查询物料档案 |
 | `kingdee_query_partners` | 查询客户/供应商档案 |
 | `kingdee_query_report` | 财务报表查询（GetSysReportData 专用端点）：科目余额表 `GL_RPT_AccountBalance`、账龄分析表 `GL_AgingSchedule` 等总账报表，内层过滤参数按账套透传 |

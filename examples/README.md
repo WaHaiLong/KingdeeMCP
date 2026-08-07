@@ -54,6 +54,11 @@
 |------|------|
 | 操作日志查询 | [`operation-log.md`](./operation-log.md) |
 
+### 财务
+| 场景 | 文件 |
+|------|------|
+| 查询应收单（营收/回款/应收余额） | [`ar-receivable-query.md`](./ar-receivable-query.md) |
+
 ### 成本管理
 | 场景 | 文件 |
 |------|------|

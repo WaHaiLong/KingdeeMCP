@@ -19,6 +19,7 @@ from kingdee_mcp.server import (
     KNOWN_ERROR_NEXT_ACTIONS,
     QueryInput, ViewInput, SaveInput, BillIdsInput,
     MaterialQueryInput, PartnerQueryInput, InventoryQueryInput,
+    ReceiptQueryInput,
     FormSearchInput, FieldQueryInput,
     kingdee_list_forms, kingdee_get_fields,
 )
@@ -67,6 +68,20 @@ class TestPydanticModels:
 
 
 # ─── 工具函数测试 ───────────────────────────────────────
+
+    def test_receipt_query_input_defaults(self):
+        p = ReceiptQueryInput()
+        assert "FDATE" in p.field_keys
+        assert "FCUSTOMERID.FName" in p.field_keys
+        assert "FALLAMOUNTFOR" in p.field_keys
+        assert "FRELATEHADPAYAMOUNT" in p.field_keys
+        assert p.limit == 20
+        assert p.filter_string == "FDocumentStatus='C'"
+
+    def test_receipt_query_input_rejects_extra(self):
+        with pytest.raises(ValidationError):
+            ReceiptQueryInput(unknown_field=123)
+
 
 class TestUtilityFunctions:
     def test_query_payload_format(self):

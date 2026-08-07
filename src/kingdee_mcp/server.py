@@ -1488,11 +1488,27 @@ FORM_CATALOG = {
     },
 
     "AR_Receivable": {
-        "name": "应收单",
-        "alias": ["应收", "应收单", "应收账款", "销售发票"],
-        "desc": "记录企业应收客户的款项，由销售出库单下推或手工创建。",
-        "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName,FAmount,FCloseStatus",
+        "name": "应收单/收款单",
+        "alias": ["应收", "应收单", "收款单", "回款", "应收账款", "营收", "现金回款", "票据回款"],
+        "desc": "记录客户实际付款的收款凭证，包含实收金额、结算方式（现金/银行转账/"
+                "商业承兑汇票/银行承兑汇票）和核销金额。"
+                "是营收、回款、应收余额、票据占比等财务指标的核心数据来源。",
+        "fields": (
+            "FID,FBillNo,FDate,FDocumentStatus,"
+            "FCustId.FName,FCustId.FNumber,"
+            "FRealAmt,FWriteOffAmt,"
+            "FSettleTypeId.FName,FAccountId.FName,"
+            "FExchangeRate,FCurrencyId.FName,"
+            "FSaleOrgId.FName,FCloseStatus"
+        ),
         "db_tables": ("T_AR_RECEIVABLE", "T_AR_RECEIVABLEENTRY"),
+        "common_filters": [
+            "FDocumentStatus='C'                           # 已审核",
+            "FDate>='2026-01-01' and FDate<='2026-01-31'  # 指定月份",
+            "FCloseStatus='A'                              # 未关闭（核销未完成）",
+            "FSettleTypeId.FName like '%承兑汇票%'          # 票据回款",
+            "FSettleTypeId.FName like '%转账%' or FSettleTypeId.FName like '%现金%'  # 现金/转账回款",
+        ],
     },
 
     # ══════════════════════════════════════════════════════
@@ -2377,6 +2393,34 @@ class InventoryQueryInput(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
 
 
+class ReceiptQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(
+        default="FDocumentStatus='C'",
+        description=(
+            "过滤条件，默认只查已审核收款单。"
+            "示例："
+            "\"FDate>='2026-01-01' and FDate<='2026-01-31'\"（指定月份）、"
+            "\"FCustId.FNumber='C001'\"（指定客户）、"
+            "\"FSettleTypeId.FName like '%承兑汇票%'\"（票据回款）、"
+            "\"FCloseStatus='A'\"（核销未完成）"
+        ),
+    )
+    field_keys: str = Field(
+        default=(
+            "FID,FBillNo,FDate,FDocumentStatus,"
+            "FCustId.FName,FCustId.FNumber,"
+            "FRealAmt,FWriteOffAmt,"
+            "FSettleTypeId.FName,FAccountId.FName,"
+            "FExchangeRate,FCurrencyId.FName,"
+            "FSaleOrgId.FName"
+        ),
+        description="返回字段，逗号分隔",
+    )
+    start_row: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
 # ─────────────────────────────────────────────
 # Tools
 # ─────────────────────────────────────────────
@@ -2707,6 +2751,53 @@ async def kingdee_query_inventory(params: InventoryQueryInput) -> str:
         return _fmt({"count": len(rows), "data": rows})
     except Exception as e:
         return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_receipts",
+    annotations={"title": "查询收款单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_receipts(params: ReceiptQueryInput) -> str:
+    """查询收款单（AR_Receivable）列表。
+
+    收款单记录客户实际付款信息，包含实收金额、结算方式（现金/银行转账/承兑汇票等）
+    和核销金额，是营收、回款、应收余额、票据占比等财务指标的核心数据来源。
+
+    常用 filter_string：
+    - 已审核：        "FDocumentStatus='C'"（默认）
+    - 指定客户：      "FCustId.FNumber='C001'"
+    - 指定月份：      "FDate>='2026-01-01' and FDate<='2026-01-31'"
+    - 票据回款：      "FSettleTypeId.FName like '%承兑汇票%'"
+    - 现金/转账回款： "FSettleTypeId.FName like '%现金%' or FSettleTypeId.FName like '%转账%'"
+    - 核销未完成：    "FCloseStatus='A'"
+
+    关键字段说明：
+    - FRealAmt：       实收金额（本次实际到账金额，财务核心指标）
+    - FWriteOffAmt：   已核销金额（已匹配到应收账款的金额）
+    - FSettleTypeId：  结算方式（现金/银行转账/商业承兑汇票/银行承兑汇票）
+    - FAccountId：     收款账户（收款银行账户名称）
+    - FExchangeRate：  汇率（多币别收款时使用）
+    - FCloseStatus：   关闭状态（A=未关闭/核销中，B=已关闭/全额核销）
+
+    💡 REMEMBER: 若报"字段不存在"，用 kingdee_get_fields('AR_Receivable') 确认该账套可用字段
+
+    Returns:
+        str: JSON，含 count / has_more / data 字段
+    """
+    try:
+        result = await _post("query", _query_payload(
+            "AR_Receivable", params.field_keys, params.filter_string,
+            "FDate DESC,FBillNo DESC", params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "data": rows,
+        })
+    except Exception as e:
+        return _err(e, op="query_receipts")
 
 
 @mcp.tool(

@@ -8,6 +8,14 @@
 
 ---
 
+## [Unreleased]
+
+### Added（新增）
+
+- **`kingdee_query_receipts`**：查询收款单（`AR_Receivable`）。支持按客户、日期、结算方式（现金/转账/商业承兑汇票/银行承兑汇票）、核销状态过滤。关键字段：`FRealAmt`（实收金额）、`FWriteOffAmt`（已核销金额）、`FSettleTypeId.FName`（结算方式）、`FAccountId.FName`（收款账户）。适用于营收统计、回款分析、应收余额、票据占比等财务指标查询。同步完善 `FORM_CATALOG` 中 `AR_Receivable` 的字段说明、业务描述与常用过滤示例。新增 `examples/ar-receivable-query.md`。
+
+---
+
 ## [0.2.1] - 2026-08-05
 
 ### Fixed（修复 · 文档）

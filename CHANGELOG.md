@@ -8,6 +8,14 @@
 
 ---
 
+## [Unreleased]
+
+### Added（新增）
+
+- **`kingdee_query_outsource_orders`**：查询委外加工订单（`SUB_SubReqOrder`）。支持按供应商、产品型号、批次号、执行状态（1=开工/3=完工/6=结案/7=结算）、计划完工日过滤。关键字段：`FNoStockInQty`（未入库在制量）、`FPlanFinishDate`（计划完工日）、`FLot.FNumber`（批次号）、`FPurOrderNo`（关联采购订单号）。注明 `F_XTR_Qty` 为晶圆辅单位片数自定义字段（非标准字段）。适用于 WIP 在制量统计、逾期分析、回货交期预测。新增 `FORM_CATALOG` 中 `SUB_SubReqOrder` 条目（含字段列表、业务说明、FStatus 枚举、common_filters）。新增 `examples/outsource-query.md`。
+
+---
+
 ## [0.2.1] - 2026-08-05
 
 ### Fixed（修复 · 文档）

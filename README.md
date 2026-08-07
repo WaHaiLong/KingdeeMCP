@@ -53,7 +53,7 @@ AI 会自动调用金蝶 API 完成操作，无需手动登录 ERP 界面。
 
 ## 功能特性
 
-- **87 个工具**：覆盖生产、成本、资产、审计、采购、销售、库存、财务报表等 13+ 大业务域
+- **88 个工具**：覆盖生产、成本、资产、审计、采购、销售、库存、委外加工等 13+ 大业务域
 - **元数据动态查询**：`get_bill_template` / `validate_bill` / `refresh_metadata`，元数据本地缓存
 - **4 个 SQL Server 探查工具**：搜索表、搜索字段、查看表结构、金蝶元数据候选发现
 - **自然语言操作**：用中文直接描述需求，AI 自动转换为 API 调用
@@ -149,7 +149,7 @@ uvx kingdee-mcp
 
 ## 可用工具列表
 
-共 **87 个工具**，按业务域分组（每组列出代表性工具，完整清单见 `src/kingdee_mcp/server.py`）：
+共 **88 个工具**，按业务域分组（每组列出代表性工具，完整清单见 `src/kingdee_mcp/server.py`）：
 
 | 业务域 | 数量 | 代表性工具 |
 |--------|------|-----------|
@@ -158,6 +158,7 @@ uvx kingdee-mcp
 | 成本核算 | 12 | `kingdee_query_material_cost` · `kingdee_query_cost_calculation` · `kingdee_save_cost_adjustment` · `kingdee_query_finished_product_cost` |
 | 固定资产 | 6 | `kingdee_query_fixed_asset` · `kingdee_save_asset` · `kingdee_query_asset_depreciation` |
 | 库存 | 9 | `kingdee_query_inventory` · `kingdee_query_stock_bills` · `kingdee_push_stock_transfer` · `kingdee_query_transfer_direct` |
+| 委外加工 | 1 | `kingdee_query_outsource_orders`（委外加工订单：在制量/逾期/回货预测） |
 | 审计合规 | 7 | `kingdee_query_operation_logs` · `kingdee_query_change_log` · `kingdee_create_and_audit` · `kingdee_push_and_audit` |
 | 采购 | 4 | `kingdee_query_purchase_orders` · `kingdee_query_purchase_requisitions` · `kingdee_query_purchase_inquiry` |
 | 销售 | 2 | `kingdee_query_sale_orders` · `kingdee_query_sale_quotations` |
@@ -188,6 +189,7 @@ uvx kingdee-mcp
 | `kingdee_query_sale_quotations` | 查询销售报价单（SAL_Quotation） |
 | `kingdee_query_stock_bills` | 查询出入库单据 |
 | `kingdee_query_inventory` | 查询即时库存 |
+| `kingdee_query_outsource_orders` | 查询委外加工订单（SUB_SubReqOrder）：在制量、逾期分析、回货交期预测，WIP 数据核心来源 |
 | `kingdee_query_materials` | 查询物料档案 |
 | `kingdee_query_partners` | 查询客户/供应商档案 |
 | `kingdee_query_report` | 财务报表查询（GetSysReportData 专用端点）：科目余额表 `GL_RPT_AccountBalance`、账龄分析表 `GL_AgingSchedule` 等总账报表，内层过滤参数按账套透传 |

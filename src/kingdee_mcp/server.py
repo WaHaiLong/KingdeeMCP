@@ -1565,6 +1565,37 @@ FORM_CATALOG = {
     },
 
     # ══════════════════════════════════════════════════════
+    # 委外加工
+    # ══════════════════════════════════════════════════════
+
+    "SUB_SubReqOrder": {
+        "name": "委外加工订单",
+        "alias": ["委外订单", "委外加工", "外协", "CP委外", "WIP", "在制", "委外在制"],
+        "desc": (
+            "外协生产任务单据，记录 CP 测试、封装、FT 成品测试等工序委托加工情况。"
+            "FNoStockInQty 为当前未入库在制量，FPlanFinishDate 为计划完工日。"
+            "FStatus 枚举：1=开工，3=完工，6=结案，7=结算。"
+            "注：F_XTR_Qty 为晶圆辅单位片数（自定义扩展字段，非金蝶标准字段）。"
+        ),
+        "fields": (
+            "FID,FBillNo,FDate,FDocumentStatus,FStatus,"
+            "FSupplierId.FName,FSupplierId.FNumber,"
+            "FTreeEntity_FEntryID,"
+            "FMaterialId.FNumber,FMaterialId.FName,FMaterialId.FSpecification,"
+            "FQty,FStockInQty,FNoStockInQty,"
+            "FPlanFinishDate,FUnitId.FName,"
+            "FLot.FNumber,FPurOrderNo"
+        ),
+        "db_tables": ("T_SUB_REQORDER", "T_SUB_REQORDERENTRY"),
+        "common_filters": [
+            "FDocumentStatus='C' and FStatus not in ('6','7')   # 已审核未结案（在制）",
+            "FPlanFinishDate<GETDATE() and FStatus='1'           # 逾期开工中",
+            "FStatus='3'                                         # 已完工待入库",
+            "FSupplierId.FName like '%华力%'                     # 指定供应商",
+        ],
+    },
+
+    # ══════════════════════════════════════════════════════
     # 生产
     # ══════════════════════════════════════════════════════
 
@@ -2455,6 +2486,39 @@ class ReceiptQueryInput(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
 
 
+class OutsourceOrderQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(
+        default="FDocumentStatus='C' and FStatus not in ('6','7')",
+        description=(
+            "过滤条件，默认查已审核且未结案/结算的委外订单（即在制中）。"
+            "示例："
+            "\"FSupplierId.FName like '%华力%'\"（指定供应商）、"
+            "\"FPlanFinishDate<='2026-08-31'\"（指定截止日前到期）、"
+            "\"FStatus='1'\"（1=开工，3=完工，6=结案，7=结算）、"
+            "\"FMaterialId.FSpecification='APT32F004B'\"（指定产品型号）、"
+            "\"FLot.FNumber='AP5E047'\"（指定批次号）"
+        ),
+    )
+    field_keys: str = Field(
+        default=(
+            "FID,FBillNo,FDate,FDocumentStatus,FStatus,"
+            "FSupplierId.FName,FSupplierId.FNumber,"
+            "FTreeEntity_FEntryID,"
+            "FMaterialId.FNumber,FMaterialId.FName,FMaterialId.FSpecification,"
+            "FQty,FStockInQty,FNoStockInQty,"
+            "FPlanFinishDate,FUnitId.FName,"
+            "FLot.FNumber,FPurOrderNo"
+        ),
+        description=(
+            "返回字段，逗号分隔。"
+            "注：F_XTR_Qty 为晶圆辅单位片数（自定义字段，如需可追加到 field_keys）"
+        ),
+    )
+    start_row: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
 # ─────────────────────────────────────────────
 # Tools
 # ─────────────────────────────────────────────
@@ -2785,6 +2849,56 @@ async def kingdee_query_inventory(params: InventoryQueryInput) -> str:
         return _fmt({"count": len(rows), "data": rows})
     except Exception as e:
         return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_outsource_orders",
+    annotations={"title": "查询委外加工订单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_outsource_orders(params: OutsourceOrderQueryInput) -> str:
+    """查询委外加工订单（SUB_SubReqOrder）列表。
+
+    委外加工订单记录外协生产任务，包含 CP 测试、封装、FT 成品测试等工序
+    的委托加工情况，是 WIP 在制量、逾期分析、回货预测的核心数据来源。
+
+    常用 filter_string：
+    - 在制（未结案）：  "FDocumentStatus='C' and FStatus not in ('6','7')"（默认）
+    - 指定供应商：     "FSupplierId.FName like '%华力%'"
+    - 逾期未完工：     "FPlanFinishDate<GETDATE() and FStatus not in ('3','6','7')"
+    - 30 天内到期：    "FPlanFinishDate>=GETDATE() and FPlanFinishDate<=DATEADD(day,30,GETDATE())"
+    - 指定批次：       "FLot.FNumber='AP5E047'"
+    - 指定产品型号：   "FMaterialId.FSpecification='APT32F004B'"
+    - 已完工待入库：   "FStatus='3'"
+
+    关键字段说明：
+    - FQty：           委外订单总数量（颗）
+    - FStockInQty：    已入库数量（已完工回厂的数量）
+    - FNoStockInQty：  未入库在制量（FQty - FStockInQty，可为负表示超收）
+    - FStatus：        执行状态（1=开工，3=完工，6=结案，7=结算）
+    - FPlanFinishDate：计划完工日（逾期判断基准）
+    - FPurOrderNo：    关联采购订单号（CP 委外专用，可反查晶圆来源采购单）
+    - FLot.FNumber：   批次号（WIP 追溯用）
+    - F_XTR_Qty：      晶圆辅单位片数（自定义扩展字段，如需可追加到 field_keys）
+
+    💡 REMEMBER: 若报"字段不存在"，用 kingdee_get_fields('SUB_SubReqOrder') 确认该账套可用字段
+
+    Returns:
+        str: JSON，含 count / has_more / data 字段
+    """
+    try:
+        result = await _post("query", _query_payload(
+            "SUB_SubReqOrder", params.field_keys, params.filter_string,
+            "FPlanFinishDate ASC,FBillNo ASC", params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "data": rows,
+        })
+    except Exception as e:
+        return _err(e, op="query_outsource_orders")
 
 
 @mcp.tool(

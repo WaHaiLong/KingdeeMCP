@@ -19,6 +19,7 @@ from kingdee_mcp.server import (
     KNOWN_ERROR_NEXT_ACTIONS,
     QueryInput, ViewInput, SaveInput, BillIdsInput,
     MaterialQueryInput, PartnerQueryInput, InventoryQueryInput,
+    OutsourceOrderQueryInput,
     ReceiptQueryInput,
     FormSearchInput, FieldQueryInput,
     kingdee_list_forms, kingdee_get_fields,
@@ -65,6 +66,19 @@ class TestPydanticModels:
     def test_partner_query_input_partner_type(self):
         p = PartnerQueryInput(partner_type="BD_Customer")
         assert p.partner_type == "BD_Customer"
+
+
+    def test_outsource_order_query_input_defaults(self):
+        p = OutsourceOrderQueryInput()
+        assert "FNoStockInQty" in p.field_keys
+        assert "FPlanFinishDate" in p.field_keys
+        assert "FLot.FNumber" in p.field_keys
+        assert p.limit == 20
+        assert "FStatus not in ('6','7')" in p.filter_string
+
+    def test_outsource_order_query_input_rejects_extra(self):
+        with pytest.raises(ValidationError):
+            OutsourceOrderQueryInput(unknown_field=123)
 
 
 # ─── 工具函数测试 ───────────────────────────────────────

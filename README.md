@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.WaHaiLong/kingdee-mcp -->
+
 # Kingdee MCP Server —— 让 AI 直接操作金蝶云星空 ERP
 
 [![PyPI version](https://img.shields.io/pypi/v/kingdee-mcp?style=flat-square&color=2563eb)](https://pypi.org/project/kingdee-mcp/)

@@ -351,6 +351,16 @@ kingdee-mcp 提供两层能力：
 - [MCP 协议文档](https://modelcontextprotocol.io/)
 - [金蝶云星空官网](https://www.kingdee.com/)
 
+## 贡献者致谢
+
+感谢为本项目贡献代码的开发者：
+
+| 贡献者 | 贡献内容 |
+| --- | --- |
+| [@chncaesar](https://github.com/chncaesar) (Jiachuan Zhu) | `kingdee_query_receipts` 收款单查询（AR_Receivable）、`kingdee_query_outsource_orders` 委外加工订单查询（SUB_SubReqOrder）——含真实账套实测字段校正与单元测试 |
+
+欢迎提交 Issue 和 Pull Request。新增单据查询工具建议附带 `FORM_CATALOG` 条目、常用过滤示例与 mock 测试。
+
 ## 联系方式
 
 - QQ：1724349716

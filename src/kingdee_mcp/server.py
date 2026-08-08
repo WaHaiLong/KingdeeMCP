@@ -1147,7 +1147,7 @@ FORM_CATALOG = {
             "FMaterialId.FName,FMaterialId.FNumber,FQty,"
             "FReceiveQty,FStockInQty"
         ),
-        "db_tables": ("T_PUR_PURCHASEORDER", "T_PUR_POORDERENTRY"),
+        "db_tables": ("T_PUR_POORDER", "T_PUR_POORDERENTRY"),
         "business_rules": {
             "FReceiveQty": "累计收料数量（收料单审核时累加，反审核时扣减）",
             "FStockInQty": "累计入库数量（入库单审核时累加，反审核时扣减）",

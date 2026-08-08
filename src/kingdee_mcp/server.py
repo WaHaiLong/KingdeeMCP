@@ -440,8 +440,64 @@ def _parse_kingdee_errors(result: Any) -> list:
     return errors
 
 
-def _result_status(result: Any, op: str) -> dict:
-    """构建结构化操作结果（约束层 + 反馈层）"""
+def _reconcile_batch(status: Any, requested_ids: Any) -> dict:
+    """核对「提交了几个」与「金蝶确认成功了几个」，把静默丢单变成显式失败。
+
+    背景（issue #8）：批量 Submit/Audit/Unaudit/Delete 时，金蝶可能只处理了一部分
+    单据却仍返回 ``IsSuccess: true``，``SuccessEntitys`` 里只有寥寥几条。调用方只看
+    ``success`` 字段就会误以为全部生效 —— 这类"假成功"比直接报错危险得多。
+
+    Args:
+        status: 金蝶返回的 ResponseStatus 字典。
+        requested_ids: 本次请求实际提交的 ID（列表或逗号拼接字符串）。
+
+    Returns:
+        dict: 含 requested_count / succeeded_count / missing_ids 的对账结果；
+              无法对账（缺少任一侧数据）时返回空 dict，调用方按原逻辑处理。
+    """
+    if isinstance(requested_ids, str):
+        requested = [x.strip() for x in requested_ids.split(",") if x.strip()]
+    elif isinstance(requested_ids, (list, tuple, set)):
+        requested = [str(x).strip() for x in requested_ids if str(x).strip()]
+    else:
+        return {}
+
+    if not requested or not isinstance(status, dict):
+        return {}
+
+    entities = status.get("SuccessEntitys")
+    if not isinstance(entities, list):
+        return {}
+
+    succeeded = {
+        str(e.get("Id")).strip()
+        for e in entities
+        if isinstance(e, dict) and e.get("Id") is not None
+    }
+    missing = [rid for rid in requested if rid not in succeeded]
+
+    out = {
+        "requested_count": len(requested),
+        "succeeded_count": len(requested) - len(missing),
+    }
+    if missing:
+        out["missing_ids"] = missing
+        out["tip"] = (
+            f"提交了 {len(requested)} 张单据，金蝶只确认成功 {len(requested) - len(missing)} 张，"
+            f"其余 {len(missing)} 张未生效（见 missing_ids）。请逐张核对后重试，不要当作已完成。"
+        )
+    return out
+
+
+def _result_status(result: Any, op: str, requested_ids: Any = None) -> dict:
+    """构建结构化操作结果（约束层 + 反馈层）
+
+    Args:
+        result: 金蝶 WebAPI 原始返回。
+        op: 操作名（submit/audit/...），用于查生命周期下一步。
+        requested_ids: 可选，本次请求提交的单据 ID。传入后会做批量对账，
+            发现金蝶少处理了单据时把 success 置为 False（见 issue #8）。
+    """
     rs = result.get("Result", result) if isinstance(result, dict) else {}
     status = rs.get("ResponseStatus", {})
 
@@ -476,6 +532,16 @@ def _result_status(result: Any, op: str) -> dict:
             "单据操作失败，请检查 errors 列表中的 reason 和 suggestion 字段。"
             "如需更多信息，调用 kingdee_view_bill 查看单据详情。"
         )
+
+    # issue #8：批量操作对账 —— 金蝶少处理了单据却报 IsSuccess=true 时，必须显式失败
+    if requested_ids is not None:
+        recon = _reconcile_batch(status, requested_ids)
+        if recon:
+            out.update(recon)
+            if recon.get("missing_ids"):
+                ok = False
+                out["success"] = False
+
     if ok:
         # next_action 始终返回（None 表示流程完成）
         out["next_action"] = lifecycle.get("next_action")
@@ -1793,6 +1859,47 @@ async def _post(ep_key: str, payload: Any) -> Any:
         )
 
 
+def _normalize_ids(ids: Any, ep_key: str = "") -> str:
+    """把 Submit/Audit/Unaudit/Delete 的 Ids 规整成金蝶 WebAPI 要求的字符串形式。
+
+    金蝶云星空 Submit/Audit/Unaudit/Delete 接口的 data.Ids 必须是字符串：
+    单个 ``"100"``，多个用英文逗号拼接 ``"100,101,102"``（与 CancelAssign /
+    ExecuteOperation 同一约定，见本文件 ``business["Ids"] = ",".join(...)``）。
+
+    历史坑（issue #8）：旧实现遇到 list 时取 ``ids[0]``，把其余 ID **静默丢弃**，
+    接口仍返回 ``success: true``，调用方完全无感 —— 用户批量反审核 11 张单据，
+    实际只有 1 张生效，另外 10 张原封不动。这类"假成功"比直接报错危险得多。
+
+    Args:
+        ids: 单个 ID（str/int）或 ID 列表/元组。
+        ep_key: 端点名，仅用于报错信息。
+
+    Returns:
+        str: 逗号拼接后的 ID 字符串。
+
+    Raises:
+        ValueError: ID 为空（空列表 / 空字符串 / 全是空白），属调用方参数错误，
+            必须显式失败，不能悄悄发一个空 Ids 上去。
+    """
+    if isinstance(ids, (list, tuple, set)):
+        parts = [str(x).strip() for x in ids]
+    else:
+        parts = [str(ids).strip()]
+
+    parts = [p for p in parts if p]
+    if not parts:
+        raise ValueError(f"{ep_key or '该操作'} 缺少有效的单据 ID（Ids 为空）")
+
+    # 去重但保持原顺序：金蝶对重复 ID 会报错，且调用方通常无意重复提交
+    seen, uniq = set(), []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            uniq.append(p)
+
+    return ",".join(uniq)
+
+
 async def _post_raw(ep_key: str, form_id: str, model: dict,
                      need_update_fields: Optional[List[str]] = None,
                      need_return_fields: Optional[List[str]] = None,
@@ -1840,10 +1947,10 @@ async def _post_raw(ep_key: str, form_id: str, model: dict,
         body_obj = {"formid": form_id, "data": json.dumps(data_obj, ensure_ascii=False)}
     elif ep_key in ("push", "submit", "audit", "unaudit", "delete", "view"):
         data_obj = dict(model)
-        # 💡 REMEMBER: Submit/Audit/Unaudiot/Delete 的 Ids 必须是单个字符串 {"Ids":"100"}，不是数组
+        # 💡 REMEMBER: Submit/Audit/Unaudit/Delete 的 Ids 必须是字符串，多个用英文逗号拼接
+        #    {"Ids":"100"} 或 {"Ids":"100,101,102"}，不能直接传数组。
         if ep_key in ("submit", "audit", "unaudit", "delete") and "Ids" in data_obj:
-            ids = data_obj["Ids"]
-            data_obj["Ids"] = ids[0] if isinstance(ids, (list, tuple)) else ids
+            data_obj["Ids"] = _normalize_ids(data_obj["Ids"], ep_key=ep_key)
         body_obj = {"formid": form_id, "data": json.dumps(data_obj, ensure_ascii=False)}
     else:
         data_obj = {"Model": model}
@@ -6948,7 +7055,7 @@ async def kingdee_submit_production_orders(params: ProductionOrderBillIdsInput) 
     """
     try:
         result = await _post_raw("submit", "PRD_MO", {"Ids": params.bill_ids})
-        status_data = _result_status(result, "submit")
+        status_data = _result_status(result, "submit", requested_ids=params.bill_ids)
         if status_data.get("success"):
             status_data["next_action"] = "kingdee_audit_production_orders"
         return _fmt(status_data)
@@ -6969,7 +7076,7 @@ async def kingdee_audit_production_orders(params: ProductionOrderBillIdsInput) -
     """
     try:
         result = await _post_raw("audit", "PRD_MO", {"Ids": params.bill_ids})
-        return _fmt(_result_status(result, "audit"))
+        return _fmt(_result_status(result, "audit", requested_ids=params.bill_ids))
     except Exception as e:
         return _err(e, op="audit")
 

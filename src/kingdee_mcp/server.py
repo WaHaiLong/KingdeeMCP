@@ -331,6 +331,9 @@ KNOWN_ERROR_PATTERNS: List[tuple[str, str, str]] = [
     ("Bad Gateway","同上，金蝶服务器不支持 HTTP/2",                   "同上"),
     ("会话",       "Session 过期或未登录",                            "调用 _login() 重新登录"),
     ("session",    "Session 过期（英文原文）",                         "调用 _login() 重新登录"),
+    ("ctx == null", "Session 过期（金蝶官方标志：ctx==null=未登录或会话失效）", "调用 _login() 重新登录"),
+    ("未登录",       "Session 过期/未登录",                            "调用 _login() 重新登录"),
+    ("-10001",      "登录失效错误码",                                 "调用 _login() 重新登录"),
     # 业务层（常见单据操作错误）
     ("关联数量",   "累计关联数量已达订单数量，无法下推",               "检查 FReceiveQty+FStockInQty 是否已满"),
     ("业务关闭",   "该行已业务关闭，不允许操作",                       "检查 FBusinessClose 状态或联系管理员反关闭"),
@@ -348,6 +351,50 @@ KNOWN_ERROR_PATTERNS: List[tuple[str, str, str]] = [
     ("非草稿",     "单据非草稿状态，不允许 Submit",                   "确认单据状态后再决定下一步"),
     ("基础资料",   "外键引用不存在 (物料/客户/供应商/部门)",          "用 kingdee_query_materials / kingdee_query_partners 验证 FNumber"),
 ]
+
+
+def _is_session_expired(resp: "httpx.Response") -> bool:
+    """判断金蝶 WebAPI 响应是否表示会话过期/未登录，需要重新登录后重试。
+
+    金蝶官方认定的会话失效标志（vip.kingdee.com 二开案例：``ctx == null`` =
+    用户未登录或会话已失效）：
+      - HTTP 401
+      - 响应体含 ``ctx == null``（官方原生表达，最可靠）
+      - 响应体含 ``未登录``
+      - 错误码 ``-10001``（登录失效）
+
+    关键约束：必须要求响应本身「是失败响应」才判过期。否则 200 成功响应里
+    若业务字段恰好带 ``session`` 字样（如某些表单字段名），会被误判为过期并触发
+    重发——对 Save/Submit/Audit 等写操作意味着重复提交，是真实风险。
+
+    2026-08-09 修复（issue #7）：原逻辑只认 ``"会话"`` / ``"session"`` 字样，
+    当金蝶返回官方的 ``ctx == null`` / ``未登录`` / ``-10001`` 时不会重登，
+    复现用户原报的 ``ctx == null`` 症状；且 200 成功响应里碰巧带 session 字样会
+    触发重发（写操作重复提交）。本函数一次性补齐上述官方标志并约束失败响应。
+    """
+    # 1) 显式未授权
+    if resp.status_code == 401:
+        return True
+    # 2) 仅当响应本身是失败响应时才继续判定，避免成功响应误判
+    body = resp.text or ""
+    low = body.lower()
+    is_failed = (
+        resp.status_code != 200
+        or '"result":false' in low
+        or '"issuccess":false' in low
+        or "-10001" in low
+    )
+    if not is_failed:
+        return False
+    # 3) 失败响应里出现任一过期标志
+    return (
+        "ctx == null" in low
+        or "未登录" in body
+        or "session" in low
+        or "会话" in body
+        or "-10001" in low
+    )
+
 
 # next-action 元数据：与 KNOWN_ERROR_PATTERNS 平行，命中 pattern 时给出建议工具
 # 不并入 tuple 是为了保持 add_known_pattern() 三参公共签名向后兼容
@@ -1005,10 +1052,7 @@ async def _query_metadata(form_id: str, force: bool = False) -> Optional[dict]:
             resp = await _do_post(_session_id, client)
 
             # session 过期则重新登录重试一次
-            if resp.status_code == 401 or (
-                resp.status_code == 200 and
-                ("会话" in resp.text or "session" in resp.text.lower())
-            ):
+            if _is_session_expired(resp):
                 await _login()
                 resp = await _do_post(_session_id, client)
 
@@ -1705,10 +1749,7 @@ async def _post(ep_key: str, payload: Any) -> Any:
                 resp = await _do_post(_session_id)
 
                 # session 过期则重新登录重试一次
-                if resp.status_code == 401 or (
-                    resp.status_code == 200 and
-                    ("会话" in resp.text or "session" in resp.text.lower())
-                ):
+                if _is_session_expired(resp):
                     await _login()
                     resp = await _do_post(_session_id)
 
@@ -1767,10 +1808,7 @@ async def _post(ep_key: str, payload: Any) -> Any:
             resp = await _do_post(_session_id)
 
             # session 过期则重新登录重试一次
-            if resp.status_code == 401 or (
-                resp.status_code == 200 and
-                ("会话" in resp.text or "session" in resp.text.lower())
-            ):
+            if _is_session_expired(resp):
                 await _login()
                 resp = await _do_post(_session_id)
 
@@ -1880,10 +1918,7 @@ async def _post_raw(ep_key: str, form_id: str, model: dict,
                 },
             )
 
-            if resp.status_code == 401 or (
-                resp.status_code == 200 and
-                ("会话" in resp.text or "session" in resp.text.lower())
-            ):
+            if _is_session_expired(resp):
                 await _login()
                 resp = await client.post(
                     _url(ep_key),

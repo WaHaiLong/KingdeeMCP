@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from kingdee_mcp.server import (
     _query_payload, _rows, _err, _fmt,
     _match_known_pattern, _parse_kingdee_errors, add_known_pattern,
+    _is_session_expired,
     KNOWN_ERROR_NEXT_ACTIONS,
     QueryInput, ViewInput, SaveInput, BillIdsInput,
     MaterialQueryInput, PartnerQueryInput, InventoryQueryInput,
@@ -245,3 +246,53 @@ class TestErrorPatternMatching:
         m = _match_known_pattern("出现了 旧式三参pattern")
         assert m is not None
         assert "next_action_tool" not in m
+
+
+# ─── 会话过期检测（issue #7 修复）───────────────────────────────
+
+class TestSessionExpiryDetection:
+    """验证 _is_session_expired 能识别金蝶官方会话失效标志，且不会误判成功响应。"""
+
+    def test_http_401_is_expired(self):
+        resp = httpx.Response(401, text="Unauthorized")
+        assert _is_session_expired(resp) is True
+
+    def test_ctx_null_marker_is_expired(self):
+        # 金蝶官方原生表达 ctx == null = 用户未登录或会话失效
+        body = '{"Result":{"ResponseStatus":{"IsSuccess":false,"Errors":[{"Message":"ctx == null"}]}}'
+        resp = httpx.Response(200, text=body)
+        assert _is_session_expired(resp) is True
+
+    def test_unlogin_marker_is_expired(self):
+        body = '{"Result":{"ResponseStatus":{"IsSuccess":false,"Errors":[{"Message":"用户未登录"}]}}'
+        resp = httpx.Response(200, text=body)
+        assert _is_session_expired(resp) is True
+
+    def test_error_code_10001_is_expired(self):
+        body = '{"Result":{"ResponseStatus":{"IsSuccess":false,"Errors":[{"Message":"登录失效 -10001"}]}}'
+        resp = httpx.Response(200, text=body)
+        assert _is_session_expired(resp) is True
+
+    def test_legacy_session_keyword_in_failed_resp_is_expired(self):
+        # 兼容旧逻辑：失败响应里带 session 字样仍判过期
+        body = '{"Result":{"ResponseStatus":{"IsSuccess":false,"Errors":[{"Message":"session expired"}]}}'
+        resp = httpx.Response(200, text=body)
+        assert _is_session_expired(resp) is True
+
+    def test_success_resp_with_session_keyword_not_expired(self):
+        # 关键守卫：200 成功响应即使业务字段碰巧含 "session" 字样也不得判过期，
+        # 否则 Save/Submit/Audit 等写操作会被误重发（重复提交）。
+        body = '{"Result":{"ResponseStatus":{"IsSuccess":true},"NeedReturnData":{"FSessionId":"abc123"}},"IsSuccess":true}'
+        resp = httpx.Response(200, text=body)
+        assert _is_session_expired(resp) is False
+
+    def test_normal_success_resp_not_expired(self):
+        body = '{"Result":{"ResponseStatus":{"IsSuccess":true}},"IsSuccess":true}'
+        resp = httpx.Response(200, text=body)
+        assert _is_session_expired(resp) is False
+
+    def test_non_200_without_expiry_marker_not_expired(self):
+        # 500 等错误但不是会话失效，不应触发重登（交由 raise_for_status 处理）
+        resp = httpx.Response(500, text="Internal Server Error")
+        assert _is_session_expired(resp) is False
+

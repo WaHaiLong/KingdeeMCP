@@ -1,6 +1,9 @@
 ---
 name: kingdee-query
-description: 基于已连接的 kingdee-mcp（金蝶云星空 MCP 服务器），用自然语言查询与操作金蝶 ERP：销售/采购订单、即时库存、物料档案、客户/供应商、单据提交/审核/下推、生产/成本/资产等。当用户提到"金蝶""查金蝶""金蝶销售订单/库存/物料"等 ERP 查询或操作需求时触发。
+slug: kingdee-query
+displayName: 金蝶云星空查询与操作助手
+version: 1.0.0
+description: 基于已连接的 kingdee-mcp（第三方开源金蝶云星空 MCP 服务器，非金蝶官方出品），用自然语言查询与操作金蝶 ERP：销售/采购订单、即时库存、物料档案、客户/供应商、单据提交/审核/下推、生产/成本/资产等。当用户提到"金蝶""查金蝶""金蝶销售订单/库存/物料"等 ERP 查询或操作需求时触发。
 ---
 
 # 金蝶云星空 查询与操作助手 (kingdee-query)
@@ -18,7 +21,7 @@ description: 基于已连接的 kingdee-mcp（金蝶云星空 MCP 服务器）�
 - 可选：
   - `KINGDEE_LCID`：语言区，默认 `2052`（简体中文）
   - `MCP_SQLSERVER_*`：SQL Server 主机/端口/库/账号，启用数据库探查工具
-- 认证方式：金蝶官方 WebAPI **账号密码(ValidateUser)**，无需 AppID / AppSecret。
+- 认证方式：金蝶 WebAPI **账号密码(ValidateUser)**，无需 AppID / AppSecret。
 - 若尚未配置，请把仓库 `examples/workbuddy-mcp-config.example.json` 中的 `kingdee` 片段加入用户级 `~/.workbuddy/mcp.json`（替换占位符），重启 WorkBuddy 后再用本技能。
 
 ## 二、触发示例

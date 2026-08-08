@@ -1,5 +1,7 @@
 # Kingdee MCP Server —— 让 AI 直接操作金蝶云星空 ERP
 
+> ⚠️ 本项目为**第三方开源**，非金蝶官方出品，与金蝶软件（Kingdee）无任何隶属或授权关系。
+
 [![PyPI version](https://img.shields.io/pypi/v/kingdee-mcp?style=flat-square&color=2563eb)](https://pypi.org/project/kingdee-mcp/)
 [![Downloads](https://img.shields.io/pypi/dm/kingdee-mcp?style=flat-square&color=10b981)](https://pypi.org/project/kingdee-mcp/)
 [![Python versions](https://img.shields.io/pypi/pyversions/kingdee-mcp?style=flat-square)](https://pypi.org/project/kingdee-mcp/)

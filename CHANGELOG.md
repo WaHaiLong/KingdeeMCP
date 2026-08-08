@@ -4,15 +4,28 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-> 当前 PyPI 版本：`0.2.1`（见 `pyproject.toml`）。本文件按功能里程碑汇总，未单独打 git tag。
+> 当前 PyPI 版本：`0.2.2`（见 `pyproject.toml`）。本文件按功能里程碑汇总。自 `v0.2.2` 起改为打 git tag 触发自动发布。
 
 ---
 
 ## [Unreleased]
 
+---
+
+## [0.2.2] - 2026-08-08
+
 ### Added（新增）
 
 - **远程传输支持（HTTP / SSE / Streamable HTTP）**：`main()` 新增 `--transport`（stdio/sse/streamable-http，默认 stdio）、`--host`、`--port` 参数，并支持同名环境变量 `KINGDEE_MCP_TRANSPORT` / `KINGDEE_MCP_HOST` / `KINGDEE_MCP_PORT`。现在可将服务以 SSE（`/sse`）或 Streamable HTTP（`/mcp`）模式运行，便于部署到服务器或网关平台远程调用、免客户端安装。兼容老版本 mcp（<1.9 不支持 streamable-http 时自动回退 sse）。
+- **6 个标准动作通用工具 + ApiDoc 全量集成**，开源 `kingdee-mcp-dev` 专家团。
+- **上架官方 MCP Registry 所需元数据**：
+  - 新增仓库根 `server.json`（`io.github.WaHaiLong/kingdee-mcp`，`registryType: pypi`）。
+  - README 头部加入 `mcp-name: io.github.WaHaiLong/kingdee-mcp` 标记（HTML 注释形式，不影响渲染）。注册表凭该标记在 PyPI 包描述中校验包归属。
+  - `publish.yml` 增加「发布 PyPI → 等待索引 → 自动 publish 到官方 MCP Registry」链路，使用 GitHub OIDC 认证，**无需任何 token 或 secret**。
+
+### Fixed（修复）
+
+- `kingdee_query_permission` 重复注册问题；`__init__.py` 版本号与 `pyproject.toml` 对齐。
 
 ---
 

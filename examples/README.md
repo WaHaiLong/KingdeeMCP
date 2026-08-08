@@ -54,10 +54,20 @@
 |------|------|
 | 操作日志查询 | [`operation-log.md`](./operation-log.md) |
 
+### 财务
+| 场景 | 文件 |
+|------|------|
+| 查询应收单（营收/回款/应收余额） | [`ar-receivable-query.md`](./ar-receivable-query.md) |
+
 ### 成本管理
 | 场景 | 文件 |
 |------|------|
 | 存货核算/产品成本/标准成本分析 | [`cost-mgmt.md`](./cost-mgmt.md) |
+
+### 委外加工
+| 场景 | 文件 |
+|------|------|
+| 查询委外加工订单（在制/逾期/回货） | [`outsource-query.md`](./outsource-query.md) |
 
 ### 工作流与审批
 | 场景 | 文件 |

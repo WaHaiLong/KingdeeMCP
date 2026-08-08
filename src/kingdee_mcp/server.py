@@ -1497,11 +1497,27 @@ FORM_CATALOG = {
     },
 
     "AR_Receivable": {
-        "name": "应收单",
-        "alias": ["应收", "应收单", "应收账款", "销售发票"],
-        "desc": "记录企业应收客户的款项，由销售出库单下推或手工创建。",
-        "fields": "FID,FBillNo,FDate,FDocumentStatus,FCustId.FName,FAmount,FCloseStatus",
+        "name": "应收单/收款单",
+        "alias": ["应收", "应收单", "收款单", "回款", "应收账款", "营收", "现金回款", "票据回款"],
+        "desc": "记录客户应收账款，包含应收金额、已核销金额和核销状态。"
+                "是营收、回款、应收余额等财务指标的核心数据来源。"
+                "注：不同金蝶账套字段名可能不同（如 FCUSTOMERID vs FCustId），"
+                "先调用 kingdee_get_fields 确认可用字段。",
+        "fields": (
+            "FID,FBillNo,FDATE,FDocumentStatus,"
+            "FCUSTOMERID.FName,FCUSTOMERID.FNumber,"
+            "FALLAMOUNTFOR,FNOTAXAMOUNTFOR,FRELATEHADPAYAMOUNT,"
+            "FWRITTENOFFSTATUS,FOPENSTATUS,FENDDATE_H,"
+            "FSETTLEORGID.FName,FISINIT"
+        ),
         "db_tables": ("T_AR_RECEIVABLE", "T_AR_RECEIVABLEENTRY"),
+        "common_filters": [
+            "FDocumentStatus='C'                           # 已审核",
+            "FDATE>='2026-01-01' and FDATE<='2026-01-31'  # 指定月份",
+            "FWRITTENOFFSTATUS='A'                         # 未核销",
+            "FOPENSTATUS='A'                               # 未关闭",
+            "FISINIT=false                                 # 业务单据（排除期初）",
+        ],
     },
 
     # ══════════════════════════════════════════════════════
@@ -1546,6 +1562,37 @@ FORM_CATALOG = {
             "毛利闭环": "同一笔销售：SUM(收款.F_TRNV_Amount_bh8 WHERE F_TRNV_SourceBillNo_0ev=SO号) - SUM(付款.F_TRNV_Amount_bh8 WHERE F_TRNV_SONo=SO号)",
             "字段命名": "金蝶 BOS WebAPI 字段名混合大小写（如 F_TRNV_Amount_bh8），不是全大写",
         },
+    },
+
+    # ══════════════════════════════════════════════════════
+    # 委外加工
+    # ══════════════════════════════════════════════════════
+
+    "SUB_SubReqOrder": {
+        "name": "委外加工订单",
+        "alias": ["委外订单", "委外加工", "外协", "CP委外", "WIP", "在制", "委外在制"],
+        "desc": (
+            "外协生产任务单据，记录 CP 测试、封装、FT 成品测试等工序委托加工情况。"
+            "FNoStockInQty 为当前未入库在制量，FPlanFinishDate 为计划完工日。"
+            "FStatus 枚举：1=开工，3=完工，6=结案，7=结算。"
+            "注：F_XTR_Qty 为晶圆辅单位片数（自定义扩展字段，非金蝶标准字段）。"
+        ),
+        "fields": (
+            "FID,FBillNo,FDate,FDocumentStatus,FStatus,"
+            "FSupplierId.FName,FSupplierId.FNumber,"
+            "FTreeEntity_FEntryID,"
+            "FMaterialId.FNumber,FMaterialId.FName,FMaterialId.FSpecification,"
+            "FQty,FStockInQty,FNoStockInQty,"
+            "FPlanFinishDate,FUnitId.FName,"
+            "FLot.FNumber,FPurOrderNo"
+        ),
+        "db_tables": ("T_SUB_REQORDER", "T_SUB_REQORDERENTRY"),
+        "common_filters": [
+            "FDocumentStatus='C' and FStatus not in ('6','7')   # 已审核未结案（在制）",
+            "FPlanFinishDate<GETDATE() and FStatus='1'           # 逾期开工中",
+            "FStatus='3'                                         # 已完工待入库",
+            "FSupplierId.FName like '%华力%'                     # 指定供应商",
+        ],
     },
 
     # ══════════════════════════════════════════════════════
@@ -2406,6 +2453,72 @@ class InventoryQueryInput(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
 
 
+class ReceiptQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(
+        default="FDocumentStatus='C'",
+        description=(
+            "过滤条件，默认只查已审核应收单。"
+            "示例："
+            "\"FDATE>='2026-01-01' and FDATE<='2026-01-31'\"（指定月份）、"
+            "\"FCUSTOMERID.FNumber='C001'\"（指定客户）、"
+            "\"FWRITTENOFFSTATUS='A'\"（未核销）、"
+            "\"FOPENSTATUS='A'\"（未关闭）"
+            "\n⚠️ 不同金蝶账套字段名可能不同（如 FCUSTOMERID vs FCustId），"
+            "先调用 kingdee_get_fields('AR_Receivable') 确认可用字段。"
+        ),
+    )
+    field_keys: str = Field(
+        default=(
+            "FID,FBillNo,FDATE,FDocumentStatus,"
+            "FCUSTOMERID.FName,FCUSTOMERID.FNumber,"
+            "FALLAMOUNTFOR,FNOTAXAMOUNTFOR,FRELATEHADPAYAMOUNT,"
+            "FWRITTENOFFSTATUS,FOPENSTATUS,FENDDATE_H,"
+            "FSETTLEORGID.FName,FISINIT"
+        ),
+        description=(
+            "返回字段，逗号分隔。"
+            "⚠️ 不同金蝶账套字段名可能不同（如 FCUSTOMERID vs FCustId），"
+            "先调用 kingdee_get_fields('AR_Receivable') 确认可用字段。"
+        ),
+    )
+    start_row: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class OutsourceOrderQueryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    filter_string: str = Field(
+        default="FDocumentStatus='C' and FStatus not in ('6','7')",
+        description=(
+            "过滤条件，默认查已审核且未结案/结算的委外订单（即在制中）。"
+            "示例："
+            "\"FSupplierId.FName like '%华力%'\"（指定供应商）、"
+            "\"FPlanFinishDate<='2026-08-31'\"（指定截止日前到期）、"
+            "\"FStatus='1'\"（1=开工，3=完工，6=结案，7=结算）、"
+            "\"FMaterialId.FSpecification='APT32F004B'\"（指定产品型号）、"
+            "\"FLot.FNumber='AP5E047'\"（指定批次号）"
+        ),
+    )
+    field_keys: str = Field(
+        default=(
+            "FID,FBillNo,FDate,FDocumentStatus,FStatus,"
+            "FSupplierId.FName,FSupplierId.FNumber,"
+            "FTreeEntity_FEntryID,"
+            "FMaterialId.FNumber,FMaterialId.FName,FMaterialId.FSpecification,"
+            "FQty,FStockInQty,FNoStockInQty,"
+            "FPlanFinishDate,FUnitId.FName,"
+            "FLot.FNumber,FPurOrderNo"
+        ),
+        description=(
+            "返回字段，逗号分隔。"
+            "注：F_XTR_Qty 为晶圆辅单位片数（自定义字段，如需可追加到 field_keys）"
+        ),
+    )
+    start_row: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
 # ─────────────────────────────────────────────
 # Tools
 # ─────────────────────────────────────────────
@@ -2736,6 +2849,105 @@ async def kingdee_query_inventory(params: InventoryQueryInput) -> str:
         return _fmt({"count": len(rows), "data": rows})
     except Exception as e:
         return _err(e)
+
+
+@mcp.tool(
+    name="kingdee_query_outsource_orders",
+    annotations={"title": "查询委外加工订单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_outsource_orders(params: OutsourceOrderQueryInput) -> str:
+    """查询委外加工订单（SUB_SubReqOrder）列表。
+
+    委外加工订单记录外协生产任务，包含 CP 测试、封装、FT 成品测试等工序
+    的委托加工情况，是 WIP 在制量、逾期分析、回货预测的核心数据来源。
+
+    常用 filter_string：
+    - 在制（未结案）：  "FDocumentStatus='C' and FStatus not in ('6','7')"（默认）
+    - 指定供应商：     "FSupplierId.FName like '%华力%'"
+    - 逾期未完工：     "FPlanFinishDate<GETDATE() and FStatus not in ('3','6','7')"
+    - 30 天内到期：    "FPlanFinishDate>=GETDATE() and FPlanFinishDate<=DATEADD(day,30,GETDATE())"
+    - 指定批次：       "FLot.FNumber='AP5E047'"
+    - 指定产品型号：   "FMaterialId.FSpecification='APT32F004B'"
+    - 已完工待入库：   "FStatus='3'"
+
+    关键字段说明：
+    - FQty：           委外订单总数量（颗）
+    - FStockInQty：    已入库数量（已完工回厂的数量）
+    - FNoStockInQty：  未入库在制量（FQty - FStockInQty，可为负表示超收）
+    - FStatus：        执行状态（1=开工，3=完工，6=结案，7=结算）
+    - FPlanFinishDate：计划完工日（逾期判断基准）
+    - FPurOrderNo：    关联采购订单号（CP 委外专用，可反查晶圆来源采购单）
+    - FLot.FNumber：   批次号（WIP 追溯用）
+    - F_XTR_Qty：      晶圆辅单位片数（自定义扩展字段，如需可追加到 field_keys）
+
+    💡 REMEMBER: 若报"字段不存在"，用 kingdee_get_fields('SUB_SubReqOrder') 确认该账套可用字段
+
+    Returns:
+        str: JSON，含 count / has_more / data 字段
+    """
+    try:
+        result = await _post("query", _query_payload(
+            "SUB_SubReqOrder", params.field_keys, params.filter_string,
+            "FPlanFinishDate ASC,FBillNo ASC", params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "data": rows,
+        })
+    except Exception as e:
+        return _err(e, op="query_outsource_orders")
+
+
+@mcp.tool(
+    name="kingdee_query_receipts",
+    annotations={"title": "查询收款单", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False}
+)
+async def kingdee_query_receipts(params: ReceiptQueryInput) -> str:
+    """查询应收单（AR_Receivable）列表，支持按客户、日期、核销状态、打开状态过滤。
+
+    应收单记录客户应收账款，包含应收金额、已核销金额、核销状态等信息，
+    是营收、回款、应收余额、票据占比等财务指标的核心数据来源。
+
+    常用 filter_string：
+    - 已审核：        "FDocumentStatus='C'"（默认）
+    - 指定客户：      "FCUSTOMERID.FNumber='C001'"
+    - 指定月份：      "FDATE>='2026-01-01' and FDATE<='2026-01-31'"
+    - 未核销：        "FWRITTENOFFSTATUS='A'"
+    - 未关闭：        "FOPENSTATUS='A'"
+    - 期初数据：      "FISINIT=true"（初始化单）或 "FISINIT=false"（业务单）
+
+    关键字段说明：
+    - FALLAMOUNTFOR：     应收总金额（原币含税），财务核心指标
+    - FNOTAXAMOUNTFOR：   应收不含税金额（原币），用于综合毛利率计算
+    - FRELATEHADPAYAMOUNT：已核销金额
+    - FWRITTENOFFSTATUS： 核销状态（A=未核销，B=部分核销，C=完全核销）
+    - FOPENSTATUS：       打开状态（A=未关闭，B=已关闭，C=部分关闭）
+    - FENDDATE_H：        到期日
+    - FISINIT：           是否为初始化单据（期初数据）
+
+    ⚠️ 不同金蝶账套字段名可能不同（如 FCUSTOMERID 可能为 FCustId、FDate 可能为 FDATE），
+    先调用 kingdee_get_fields('AR_Receivable') 确认该账套可用字段。
+
+    Returns:
+        str: JSON，含 count / has_more / data 字段
+    """
+    try:
+        result = await _post("query", _query_payload(
+            "AR_Receivable", params.field_keys, params.filter_string,
+            "FDATE DESC,FBillNo DESC", params.start_row, params.limit
+        ))
+        rows = _rows(result)
+        return _fmt({
+            "count": len(rows),
+            "has_more": len(rows) == params.limit,
+            "data": rows,
+        })
+    except Exception as e:
+        return _err(e, op="query_receipts")
 
 
 @mcp.tool(

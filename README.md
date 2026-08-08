@@ -55,7 +55,7 @@ AI 会自动调用金蝶 API 完成操作，无需手动登录 ERP 界面。
 
 ## 功能特性
 
-- **87 个工具**：覆盖生产、成本、资产、审计、采购、销售、库存、财务报表等 13+ 大业务域
+- **99 个工具**：覆盖生产、成本、资产、审计、采购、销售、库存、财务、委外加工等 14+ 大业务域
 - **元数据动态查询**：`get_bill_template` / `validate_bill` / `refresh_metadata`，元数据本地缓存
 - **4 个 SQL Server 探查工具**：搜索表、搜索字段、查看表结构、金蝶元数据候选发现
 - **自然语言操作**：用中文直接描述需求，AI 自动转换为 API 调用
@@ -170,7 +170,7 @@ uvx kingdee-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 
 ## 可用工具列表
 
-共 **87 个工具**，按业务域分组（每组列出代表性工具，完整清单见 `src/kingdee_mcp/server.py`）：
+共 **99 个工具**，按业务域分组（每组列出代表性工具，完整清单见 `src/kingdee_mcp/server.py`）：
 
 | 业务域 | 数量 | 代表性工具 |
 |--------|------|-----------|
@@ -179,6 +179,7 @@ uvx kingdee-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 | 成本核算 | 12 | `kingdee_query_material_cost` · `kingdee_query_cost_calculation` · `kingdee_save_cost_adjustment` · `kingdee_query_finished_product_cost` |
 | 固定资产 | 6 | `kingdee_query_fixed_asset` · `kingdee_save_asset` · `kingdee_query_asset_depreciation` |
 | 库存 | 9 | `kingdee_query_inventory` · `kingdee_query_stock_bills` · `kingdee_push_stock_transfer` · `kingdee_query_transfer_direct` |
+| 委外加工 | 1 | `kingdee_query_outsource_orders`（委外订单 SUB_SubReqOrder：在制量/逾期/回货交期） |
 | 审计合规 | 7 | `kingdee_query_operation_logs` · `kingdee_query_change_log` · `kingdee_create_and_audit` · `kingdee_push_and_audit` |
 | 采购 | 4 | `kingdee_query_purchase_orders` · `kingdee_query_purchase_requisitions` · `kingdee_query_purchase_inquiry` |
 | 销售 | 2 | `kingdee_query_sale_orders` · `kingdee_query_sale_quotations` |
@@ -188,6 +189,7 @@ uvx kingdee-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 | 系统/查询 | 4 | `kingdee_query_system_config` · `kingdee_query_quality_inspections` · `kingdee_query_expense_reimburse` |
 | 统计 | 2 | `kingdee_usage_stats` · `kingdee_usage_report` |
 | 财务报表 | 1 | `kingdee_query_report`（GetSysReportData 专用端点，查科目余额表/账龄分析表等总账报表） |
+| 财务收款 | 1 | `kingdee_query_receipts`（收款单 AR_Receivable：实收金额/结算方式/核销金额） |
 
 > 元数据探查含 4 个 SQL Server 工具（`kingdee_discover_tables` / `kingdee_discover_columns` / `kingdee_describe_table` / `kingdee_discover_metadata_candidates`），需配置 `MCP_SQLSERVER_*` 环境变量。
 
@@ -209,6 +211,8 @@ uvx kingdee-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 | `kingdee_query_sale_quotations` | 查询销售报价单（SAL_Quotation） |
 | `kingdee_query_stock_bills` | 查询出入库单据 |
 | `kingdee_query_inventory` | 查询即时库存 |
+| `kingdee_query_receipts` | 查询收款单（AR_Receivable）：实收金额、结算方式（现金/转账/承兑汇票）、核销金额，营收/回款/应收余额核心数据源 |
+| `kingdee_query_outsource_orders` | 查询委外加工订单（SUB_SubReqOrder）：在制量、逾期分析、回货交期预测，WIP 数据核心来源 |
 | `kingdee_query_materials` | 查询物料档案 |
 | `kingdee_query_partners` | 查询客户/供应商档案 |
 | `kingdee_query_report` | 财务报表查询（GetSysReportData 专用端点）：科目余额表 `GL_RPT_AccountBalance`、账龄分析表 `GL_AgingSchedule` 等总账报表，内层过滤参数按账套透传 |
@@ -346,6 +350,16 @@ kingdee-mcp 提供两层能力：
 - [PyPI 包页面](https://pypi.org/project/kingdee-mcp/)
 - [MCP 协议文档](https://modelcontextprotocol.io/)
 - [金蝶云星空官网](https://www.kingdee.com/)
+
+## 贡献者致谢
+
+感谢为本项目贡献代码的开发者：
+
+| 贡献者 | 贡献内容 |
+| --- | --- |
+| [@chncaesar](https://github.com/chncaesar) (Jiachuan Zhu) | `kingdee_query_receipts` 收款单查询（AR_Receivable）、`kingdee_query_outsource_orders` 委外加工订单查询（SUB_SubReqOrder）——含真实账套实测字段校正与单元测试 |
+
+欢迎提交 Issue 和 Pull Request。新增单据查询工具建议附带 `FORM_CATALOG` 条目、常用过滤示例与 mock 测试。
 
 ## 联系方式
 

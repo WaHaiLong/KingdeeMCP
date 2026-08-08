@@ -12,7 +12,13 @@
 
 ### Added（新增）
 
+- **`kingdee_query_outsource_orders`**：查询委外加工订单（`SUB_SubReqOrder`）。记录 CP 测试、封装、FT 成品测试等外协工序，支持按供应商、计划完工日、单据状态（1=开工 / 3=完工 / 6=结案 / 7=结算）、产品型号、批次号过滤。关键字段：`FNoStockInQty`（未入库在制量）、`FPlanFinishDate`（计划完工日）、`FLot.FNumber`（批次）。适用于 WIP 在制量统计、逾期分析、回货交期预测。同步在 `FORM_CATALOG` 新增 `SUB_SubReqOrder` 条目与常用过滤示例，新增 `examples/outsource-query.md`。
 - **远程传输支持（HTTP / SSE / Streamable HTTP）**：`main()` 新增 `--transport`（stdio/sse/streamable-http，默认 stdio）、`--host`、`--port` 参数，并支持同名环境变量 `KINGDEE_MCP_TRANSPORT` / `KINGDEE_MCP_HOST` / `KINGDEE_MCP_PORT`。现在可将服务以 SSE（`/sse`）或 Streamable HTTP（`/mcp`）模式运行，便于部署到服务器或网关平台远程调用、免客户端安装。兼容老版本 mcp（<1.9 不支持 streamable-http 时自动回退 sse）。
+- **`kingdee_query_receipts`**：查询收款单（`AR_Receivable`）。支持按客户、日期、结算方式（现金/转账/商业承兑汇票/银行承兑汇票）、核销状态过滤。关键字段：`FRealAmt`（实收金额）、`FWriteOffAmt`（已核销金额）、`FSettleTypeId.FName`（结算方式）、`FAccountId.FName`（收款账户）。适用于营收统计、回款分析、应收余额、票据占比等财务指标查询。同步完善 `FORM_CATALOG` 中 `AR_Receivable` 的字段说明、业务描述与常用过滤示例。新增 `examples/ar-receivable-query.md`。
+
+### Fixed（修复 · 文档）
+
+- **README 工具数量少报**：功能特性与工具列表长期写「87/88 个工具」，实测 `server.py` 已注册 97 个（本次两个新工具后为 99 个）。已按实际数量修正。
 
 ---
 

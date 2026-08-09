@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.WaHaiLong/kingdee-mcp",
   "title": "Kingdee K3Cloud (Cloud Galaxy) ERP",
-  "description": "Third-party open-source MCP server for Kingdee K3Cloud ERP - 87 tools, 13 domains. Unofficial.",
+  "description": "Third-party open-source MCP server for Kingdee K3Cloud ERP - 99 tools, 16 domains. Unofficial.",
   "version": "0.2.2",
   "repository": {
     "url": "https://github.com/WaHaiLong/KingdeeMCP",

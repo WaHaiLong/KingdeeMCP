@@ -36,6 +36,8 @@
 ### Fixed（修复 · 文档）
 
 - **README 工具数量少报**：功能特性与工具列表长期写「87/88 个工具」，实测 `server.py` 已注册 97 个（本次两个新工具后为 99 个）。已按实际数量修正。
+- **对外清单数字与代码对不上（发版前拦下）**：`server.json` 的 `description` 仍写 `87 tools, 13 domains`，而这份文件要提交到官方 MCP Registry，并被 lobehub / himcp / PulseMCP 等聚合站原样抓取展示 —— 照此发布等于对外少报 12 个工具。同时 README 顶部写「99 个工具」，下方业务域表格逐行相加却只有 87，表格自身也没对上。现已核对 `server.py` 实际注册的 99 个工具（无重名），重新归入 16 个业务域并逐行校正数量；`server.json`、README 顶部声明、业务域表格三处统一为 **99 工具 / 16 业务域**。
+- **新增发版元数据一致性回归测试**（`tests/test_tool_count_consistency.py`，9 例，已接入 CI）：锁死「代码实际工具数 == README 声明 == README 表格合计 == `server.json` description」「业务域数量三处一致」「`pyproject.toml` / `__init__.py` / `server.json` 顶层与 `packages[0]` 四处版本号一致」「description ≤ 100 字符（官方 Registry 硬限制）」「第三方非官方声明不得被删」「PyPI 包名与 `pyproject.toml` 一致」。这类错误不会让程序崩，功能测试永远发现不了；版本号漏改一处更是要等 tag 已经推出去、PyPI 拒收时才暴露，回滚代价高。
 
 ### Changed（变更）
 

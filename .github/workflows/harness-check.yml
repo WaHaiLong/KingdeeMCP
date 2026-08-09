@@ -38,3 +38,9 @@ jobs:
           python -m pytest -v \
             tests/test_db_tables_consistency.py \
             tests/test_batch_ids_no_silent_loss.py
+
+      # 发版前置校验：对外声明（工具数/业务域数/版本号）必须跟代码对得上。
+      # server.json 会被官方 Registry 和各聚合站原样抓走，数字错了传播面最广；
+      # 版本号任意一处漏改，打完 tag 的发布流水线就会发错版本或被 PyPI 拒绝。
+      - name: Run release metadata consistency checks
+        run: python -m pytest tests/test_tool_count_consistency.py -v

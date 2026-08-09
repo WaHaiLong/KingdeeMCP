@@ -57,7 +57,7 @@ AI 会自动调用金蝶 API 完成操作，无需手动登录 ERP 界面。
 
 ## 功能特性
 
-- **99 个工具**：覆盖生产、成本、资产、审计、采购、销售、库存、财务、委外加工等 14+ 大业务域
+- **99 个工具**：覆盖生产、成本、资产、审计、采购、销售、库存、财务、委外加工等 16 大业务域
 - **元数据动态查询**：`get_bill_template` / `validate_bill` / `refresh_metadata`，元数据本地缓存
 - **4 个 SQL Server 探查工具**：搜索表、搜索字段、查看表结构、金蝶元数据候选发现
 - **自然语言操作**：用中文直接描述需求，AI 自动转换为 API 调用
@@ -176,19 +176,19 @@ uvx kingdee-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 
 | 业务域 | 数量 | 代表性工具 |
 |--------|------|-----------|
-| 通用单据 | 10 | `kingdee_save_bill` · `kingdee_submit_bills` · `kingdee_audit_bills` · `kingdee_validate_bill` · `kingdee_push_and_audit` |
+| 通用单据 | 15 | `kingdee_save_bill` · `kingdee_submit_bills` · `kingdee_audit_bills` · `kingdee_unaudit_bills` · `kingdee_delete_bills` · `kingdee_validate_bill` · `kingdee_push_bill` · `kingdee_close_bill` |
 | 生产制造 | 12 | `kingdee_query_production_orders` · `kingdee_save_production_order` · `kingdee_query_mrp_result` · `kingdee_push_production_pick` |
 | 成本核算 | 12 | `kingdee_query_material_cost` · `kingdee_query_cost_calculation` · `kingdee_save_cost_adjustment` · `kingdee_query_finished_product_cost` |
 | 固定资产 | 6 | `kingdee_query_fixed_asset` · `kingdee_save_asset` · `kingdee_query_asset_depreciation` |
 | 库存 | 9 | `kingdee_query_inventory` · `kingdee_query_stock_bills` · `kingdee_push_stock_transfer` · `kingdee_query_transfer_direct` |
 | 委外加工 | 1 | `kingdee_query_outsource_orders`（委外订单 SUB_SubReqOrder：在制量/逾期/回货交期） |
-| 审计合规 | 7 | `kingdee_query_operation_logs` · `kingdee_query_change_log` · `kingdee_create_and_audit` · `kingdee_push_and_audit` |
-| 采购 | 4 | `kingdee_query_purchase_orders` · `kingdee_query_purchase_requisitions` · `kingdee_query_purchase_inquiry` |
-| 销售 | 2 | `kingdee_query_sale_orders` · `kingdee_query_sale_quotations` |
+| 审计合规 | 6 | `kingdee_query_operation_logs` · `kingdee_query_audit_log` · `kingdee_query_change_log` · `kingdee_query_permission_changes` · `kingdee_create_and_audit` · `kingdee_push_and_audit` |
+| 采购 | 5 | `kingdee_query_purchase_orders` · `kingdee_query_purchase_requisitions` · `kingdee_query_purchase_inquiry` · `kingdee_query_purchase_order_progress` · `kingdee_query_supplier_quotes` |
+| 销售 | 4 | `kingdee_query_sale_orders` · `kingdee_query_sale_quotations` · `kingdee_query_sales_outstock` · `kingdee_query_delivery_notice` |
 | 工作流/审批 | 4 | `kingdee_query_pending_approvals` · `kingdee_workflow_approve` · `kingdee_query_approval_flow` |
-| 基础资料/权限 | 4 | `kingdee_query_materials` · `kingdee_query_partners` · `kingdee_query_user` · `kingdee_query_role` |
+| 基础资料/权限 | 5 | `kingdee_query_materials` · `kingdee_query_partners` · `kingdee_query_user` · `kingdee_query_role` · `kingdee_query_permission` |
 | 元数据/探查 | 8 | `kingdee_get_fields` · `kingdee_list_forms` · `kingdee_get_bill_template` · `kingdee_discover_tables` |
-| 系统/查询 | 4 | `kingdee_query_system_config` · `kingdee_query_quality_inspections` · `kingdee_query_expense_reimburse` |
+| 系统/其他 | 8 | `kingdee_query_system_config` · `kingdee_query_quality_inspections` · `kingdee_query_expense_reimburse` · `kingdee_query_number_rule` · `kingdee_query_loan_balance` · `kingdee_query_data_backup` |
 | 统计 | 2 | `kingdee_usage_stats` · `kingdee_usage_report` |
 | 财务报表 | 1 | `kingdee_query_report`（GetSysReportData 专用端点，查科目余额表/账龄分析表等总账报表） |
 | 财务收款 | 1 | `kingdee_query_receipts`（收款单 AR_Receivable：实收金额/结算方式/核销金额） |

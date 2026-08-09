@@ -30,3 +30,11 @@ jobs:
 
       - name: Run unit tests
         run: python -m pytest tests/test_server.py -v
+
+      # 回归测试：每条都对应一个真实用户 issue，必须在 CI 里跑，
+      # 否则测试文件躺在仓库里也拦不住回退。
+      - name: Run regression tests (real user issues)
+        run: |
+          python -m pytest -v \
+            tests/test_db_tables_consistency.py \
+            tests/test_batch_ids_no_silent_loss.py

@@ -686,12 +686,12 @@ FDlyCntl_Low, FDlyCntl_High, FCloseStatus, FTotalAmount
 ```json
 {
   "tool": "kingdee_describe_table",
-  "params": { "table_name": "T_PUR_PURCHASEORDER" }
+  "params": { "table_name": "T_PUR_POORDER" }
 }
 ```
 
 **Demo 环境表名规范**：全部大写，不带 `t_` 前缀：
-- `T_PUR_PURCHASEORDER`（不是 `t_PUR_PurchaseOrder`）
+- `T_PUR_POORDER`（采购订单主表；不是 `t_PUR_POOrder`，也不是 `T_PUR_PURCHASEORDER`）
 - `T_BD_MATERIAL`
 - `T_STK_INSTOCK`
 

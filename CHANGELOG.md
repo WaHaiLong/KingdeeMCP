@@ -10,6 +10,16 @@
 
 ## [Unreleased]
 
+### Fixed（修复）
+
+- **批量 Submit/Audit/Unaudit/Delete 不再静默丢单**（issue #8）：`_post_raw` 遇到列表形式的 `Ids` 时原本只取首个（`ids[0]`），其余 ID **被静默丢弃且接口仍返回 `success: true`**。用户批量反审核 11 张单据，实际只有 1 张生效。现改为按金蝶 WebAPI 约定逗号拼接（`{"Ids":"100,101,102"}`，与 `CancelAssign` / `ExecuteOperation` 同一约定），并抽出纯函数 `_normalize_ids()`（自动去空白、去重保序，空 ID 显式报错而非发空请求）。
+  - `kingdee_submit_bills` / `kingdee_audit_bills` / `kingdee_unaudit_bills` / `kingdee_delete_bills` 此前已改为逐张调用绕开了该问题，但**根因未除**：`kingdee_submit_production_orders` / `kingdee_audit_production_orders` 仍在直接传列表，批量提交生产订单时同样只有首张生效。本次从根上修掉。
+- **批量操作新增「提交数 vs 成功数」对账**（issue #8 的另一半）：`_result_status()` 原先只看金蝶返回的 `IsSuccess`，从不核对实际生效数量 —— 金蝶少处理了单据仍会报成功。现新增可选参数 `requested_ids`，传入后与 `SuccessEntitys` 对账，发现漏单则把 `success` 置为 `False` 并列出 `missing_ids`。不传该参数时行为完全不变，老调用方零影响。
+
+### Changed（变更）
+
+- **CI 补跑回归测试**：`harness-check.yml` 此前只跑 `tests/test_server.py`，导致 issue #13 的表名一致性回归测试（`test_db_tables_consistency.py`）虽已入库却从未在 CI 中执行 —— 表名被改回去 CI 依然是绿的。现新增独立步骤，显式运行全部「对应真实用户 issue」的回归测试。
+
 ### Added（新增）
 
 - **`kingdee_query_outsource_orders`**：查询委外加工订单（`SUB_SubReqOrder`）。记录 CP 测试、封装、FT 成品测试等外协工序，支持按供应商、计划完工日、单据状态（1=开工 / 3=完工 / 6=结案 / 7=结算）、产品型号、批次号过滤。关键字段：`FNoStockInQty`（未入库在制量）、`FPlanFinishDate`（计划完工日）、`FLot.FNumber`（批次）。适用于 WIP 在制量统计、逾期分析、回货交期预测。同步在 `FORM_CATALOG` 新增 `SUB_SubReqOrder` 条目与常用过滤示例，新增 `examples/outsource-query.md`。

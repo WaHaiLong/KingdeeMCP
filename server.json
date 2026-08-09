@@ -1,0 +1,52 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.WaHaiLong/kingdee-mcp",
+  "title": "Kingdee K3Cloud (Cloud Galaxy) ERP",
+  "description": "Third-party open-source MCP server for Kingdee K3Cloud ERP - 87 tools, 13 domains. Unofficial.",
+  "version": "0.2.2",
+  "repository": {
+    "url": "https://github.com/WaHaiLong/KingdeeMCP",
+    "source": "github"
+  },
+  "websiteUrl": "https://wahailong.github.io/KingdeeMCP/",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "kingdee-mcp",
+      "version": "0.2.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "KINGDEE_SERVER_URL",
+          "description": "Kingdee K3Cloud server base URL, must end with /k3cloud/ (e.g. http://your-server/k3cloud/)",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "KINGDEE_ACCT_ID",
+          "description": "Kingdee account set (data center) ID",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "KINGDEE_USERNAME",
+          "description": "Kingdee login user name (ValidateUser login)",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "KINGDEE_PASSWORD",
+          "description": "Kingdee login password (ValidateUser login)",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

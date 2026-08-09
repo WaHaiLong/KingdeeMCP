@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Publish to PyPI & MCP Registry
 
 on:
   push:
@@ -6,10 +6,14 @@ on:
       - "v*"
   workflow_dispatch:
 
-# PyPI 可信发布(Trusted Publishing / OIDC)：无需任何 token。
-# 前置：在 pypi.org 项目 kingdee-mcp → Manage → Publishing 添加可信发布者，
-#       配置 Owner=WaHaiLong, Repository=KingdeeMCP, Workflow=publish.yml, Environment=(空)。
-# 本工作流须有 `id-token: write` 权限，twine 会自动用 OIDC 令牌上传。
+# 两段发布，均免 token：
+# 1) PyPI 可信发布(Trusted Publishing / OIDC)：
+#    前置：在 pypi.org 项目 kingdee-mcp → Manage → Publishing 添加可信发布者，
+#          配置 Owner=WaHaiLong, Repository=KingdeeMCP, Workflow=publish.yml, Environment=(空)。
+# 2) 官方 MCP Registry (registry.modelcontextprotocol.io)：
+#    用 GitHub OIDC 登录（mcp-publisher login github-oidc），无需任何 secret。
+#    命名空间 io.github.WaHaiLong/* 由本仓库所有者身份自动授权。
+# 两者都依赖 `id-token: write`。
 permissions:
   contents: read
   id-token: write
@@ -34,3 +38,51 @@ jobs:
 
       - name: Publish to PyPI (Trusted Publishing, no token)
         run: twine upload dist/*
+
+      # ---------- 以下为官方 MCP Registry 上架 ----------
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "解析出的版本号：${VERSION}"
+
+      - name: Sync version into server.json
+        run: |
+          V='${{ steps.ver.outputs.version }}'
+          jq --arg v "$V" '.version = $v | .packages[0].version = $v' server.json > server.tmp
+          mv server.tmp server.json
+          cat server.json
+
+      # 注册表会去 PyPI 拉取包描述校验 mcp-name 标记，
+      # 刚上传的版本需要几十秒才可查，这里轮询等待，避免 "Package validation failed"。
+      - name: Wait for PyPI to index the new version
+        run: |
+          V='${{ steps.ver.outputs.version }}'
+          for i in $(seq 1 30); do
+            FOUND=$(curl -sf "https://pypi.org/pypi/kingdee-mcp/${V}/json" -o /dev/null -w "%{http_code}" || true)
+            if [ "$FOUND" = "200" ]; then
+              echo "PyPI 已索引 ${V}（第 ${i} 次探测）"
+              exit 0
+            fi
+            echo "等待 PyPI 索引 ${V} ... (${i}/30)"
+            sleep 10
+          done
+          echo "::error::PyPI 在 5 分钟内仍未索引 ${V}，跳过注册表发布。可稍后手动重跑本工作流。"
+          exit 1
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          chmod +x mcp-publisher
+
+      - name: Authenticate to MCP Registry (GitHub OIDC, no secret)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server to MCP Registry
+        run: ./mcp-publisher publish

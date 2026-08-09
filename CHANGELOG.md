@@ -4,31 +4,42 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-> 当前 PyPI 版本：`0.2.1`（见 `pyproject.toml`）。本文件按功能里程碑汇总，未单独打 git tag。
+> 当前 PyPI 版本：`0.2.2`（见 `pyproject.toml`）。本文件按功能里程碑汇总。自 `v0.2.2` 起改为打 git tag 触发自动发布。
 
 ---
 
 ## [Unreleased]
 
-### Fixed（修复）
+---
 
-- **批量 Submit/Audit/Unaudit/Delete 不再静默丢单**（issue #8）：`_post_raw` 遇到列表形式的 `Ids` 时原本只取首个（`ids[0]`），其余 ID **被静默丢弃且接口仍返回 `success: true`**。用户批量反审核 11 张单据，实际只有 1 张生效。现改为按金蝶 WebAPI 约定逗号拼接（`{"Ids":"100,101,102"}`，与 `CancelAssign` / `ExecuteOperation` 同一约定），并抽出纯函数 `_normalize_ids()`（自动去空白、去重保序，空 ID 显式报错而非发空请求）。
-  - `kingdee_submit_bills` / `kingdee_audit_bills` / `kingdee_unaudit_bills` / `kingdee_delete_bills` 此前已改为逐张调用绕开了该问题，但**根因未除**：`kingdee_submit_production_orders` / `kingdee_audit_production_orders` 仍在直接传列表，批量提交生产订单时同样只有首张生效。本次从根上修掉。
-- **批量操作新增「提交数 vs 成功数」对账**（issue #8 的另一半）：`_result_status()` 原先只看金蝶返回的 `IsSuccess`，从不核对实际生效数量 —— 金蝶少处理了单据仍会报成功。现新增可选参数 `requested_ids`，传入后与 `SuccessEntitys` 对账，发现漏单则把 `success` 置为 `False` 并列出 `missing_ids`。不传该参数时行为完全不变，老调用方零影响。
-
-### Changed（变更）
-
-- **CI 补跑回归测试**：`harness-check.yml` 此前只跑 `tests/test_server.py`，导致 issue #13 的表名一致性回归测试（`test_db_tables_consistency.py`）虽已入库却从未在 CI 中执行 —— 表名被改回去 CI 依然是绿的。现新增独立步骤，显式运行全部「对应真实用户 issue」的回归测试。
+## [0.2.2] - 2026-08-09
 
 ### Added（新增）
 
 - **`kingdee_query_outsource_orders`**：查询委外加工订单（`SUB_SubReqOrder`）。记录 CP 测试、封装、FT 成品测试等外协工序，支持按供应商、计划完工日、单据状态（1=开工 / 3=完工 / 6=结案 / 7=结算）、产品型号、批次号过滤。关键字段：`FNoStockInQty`（未入库在制量）、`FPlanFinishDate`（计划完工日）、`FLot.FNumber`（批次）。适用于 WIP 在制量统计、逾期分析、回货交期预测。同步在 `FORM_CATALOG` 新增 `SUB_SubReqOrder` 条目与常用过滤示例，新增 `examples/outsource-query.md`。
 - **远程传输支持（HTTP / SSE / Streamable HTTP）**：`main()` 新增 `--transport`（stdio/sse/streamable-http，默认 stdio）、`--host`、`--port` 参数，并支持同名环境变量 `KINGDEE_MCP_TRANSPORT` / `KINGDEE_MCP_HOST` / `KINGDEE_MCP_PORT`。现在可将服务以 SSE（`/sse`）或 Streamable HTTP（`/mcp`）模式运行，便于部署到服务器或网关平台远程调用、免客户端安装。兼容老版本 mcp（<1.9 不支持 streamable-http 时自动回退 sse）。
 - **`kingdee_query_receipts`**：查询收款单（`AR_Receivable`）。支持按客户、日期、结算方式（现金/转账/商业承兑汇票/银行承兑汇票）、核销状态过滤。关键字段：`FRealAmt`（实收金额）、`FWriteOffAmt`（已核销金额）、`FSettleTypeId.FName`（结算方式）、`FAccountId.FName`（收款账户）。适用于营收统计、回款分析、应收余额、票据占比等财务指标查询。同步完善 `FORM_CATALOG` 中 `AR_Receivable` 的字段说明、业务描述与常用过滤示例。新增 `examples/ar-receivable-query.md`。
+- **6 个标准动作通用工具 + ApiDoc 全量集成**，开源 `kingdee-mcp-dev` 专家团。
+- **上架官方 MCP Registry 所需元数据**：
+  - 新增仓库根 `server.json`（`io.github.WaHaiLong/kingdee-mcp`，`registryType: pypi`）。
+  - README 头部加入 `mcp-name: io.github.WaHaiLong/kingdee-mcp` 标记（HTML 注释形式，不影响渲染）。注册表凭该标记在 PyPI 包描述中校验包归属。
+  - `publish.yml` 增加「发布 PyPI → 等待索引 → 自动 publish 到官方 MCP Registry」链路，使用 GitHub OIDC 认证，**无需任何 token 或 secret**。
+
+### Fixed（修复）
+
+- **会话过期漏判导致 `ctx == null` 不自愈**（issue #7）：原重登判定只认响应里带 `会话` / `session` 字样，而金蝶实际返回的是官方原生标志 `ctx == null` / `未登录` / `-10001` / `401`，导致闲置约 30 分钟后首次调用必败且不会自动重登。新增公共函数 `_is_session_expired()` 统一识别上述全部标志，替换 4 处内联判定，并在 `KNOWN_ERROR_PATTERNS` 补齐官方标志。**关键收紧**：仅对「失败响应」判定过期，避免 200 成功响应中业务字段碰巧含 `session` 字样而误触发重发 —— 杜绝 Save / Submit / Audit 等写操作被重复提交。新增回归测试 `TestSessionExpiryDetection` 共 8 例（含防重复提交守卫用例）。
+- **批量 Submit/Audit/Unaudit/Delete 不再静默丢单**（issue #8）：`_post_raw` 遇到列表形式的 `Ids` 时原本只取首个（`ids[0]`），其余 ID **被静默丢弃且接口仍返回 `success: true`**。用户批量反审核 11 张单据，实际只有 1 张生效。现改为按金蝶 WebAPI 约定逗号拼接（`{"Ids":"100,101,102"}`，与 `CancelAssign` / `ExecuteOperation` 同一约定），并抽出纯函数 `_normalize_ids()`（自动去空白、去重保序，空 ID 显式报错而非发空请求）。
+  - `kingdee_submit_bills` / `kingdee_audit_bills` / `kingdee_unaudit_bills` / `kingdee_delete_bills` 此前已改为逐张调用绕开了该问题，但**根因未除**：`kingdee_submit_production_orders` / `kingdee_audit_production_orders` 仍在直接传列表，批量提交生产订单时同样只有首张生效。本次从根上修掉。
+- **批量操作新增「提交数 vs 成功数」对账**（issue #8 的另一半）：`_result_status()` 原先只看金蝶返回的 `IsSuccess`，从不核对实际生效数量 —— 金蝶少处理了单据仍会报成功。现新增可选参数 `requested_ids`，传入后与 `SuccessEntitys` 对账，发现漏单则把 `success` 置为 `False` 并列出 `missing_ids`。不传该参数时行为完全不变，老调用方零影响。
+- `kingdee_query_permission` 重复注册问题；`__init__.py` 版本号与 `pyproject.toml` 对齐。
 
 ### Fixed（修复 · 文档）
 
 - **README 工具数量少报**：功能特性与工具列表长期写「87/88 个工具」，实测 `server.py` 已注册 97 个（本次两个新工具后为 99 个）。已按实际数量修正。
+
+### Changed（变更）
+
+- **CI 补跑回归测试**：`harness-check.yml` 此前只跑 `tests/test_server.py`，导致 issue #13 的表名一致性回归测试（`test_db_tables_consistency.py`）虽已入库却从未在 CI 中执行 —— 表名被改回去 CI 依然是绿的。现新增独立步骤，显式运行全部「对应真实用户 issue」的回归测试。
 
 ---
 

@@ -32,6 +32,7 @@ INIT_PY = ROOT / "src" / "kingdee_mcp" / "__init__.py"
 README = ROOT / "README.md"
 SERVER_JSON = ROOT / "server.json"
 PYPROJECT = ROOT / "pyproject.toml"
+SKILL_DIR = ROOT / "skill"
 
 # 官方 MCP Registry 对 description 的长度上限（实测：超过即校验失败）
 REGISTRY_DESCRIPTION_MAX = 100
@@ -177,4 +178,70 @@ def test_server_json_pypi_identifier_matches_pyproject():
     assert name, "pyproject.toml 里找不到 name"
     assert _server_json()["packages"][0]["identifier"] == name.group(1), (
         "server.json 的 PyPI identifier 与 pyproject.toml 的包名不一致"
+    )
+
+
+# --------------------------------------------------------------------------
+# skill/**/SKILL.md —— 提交到技能商店（SkillHub）的对外清单
+#
+# 上一版这几条测试只盯 README + server.json，结果 skill/kingdee-query/SKILL.md
+# 里还写着「共 86 个」，CI 全绿地漏了过去。技能商店要实名 + 3~7 个工作日审核，
+# 数字错了改一次的代价远高于仓库文件，所以一并锁死。
+# --------------------------------------------------------------------------
+
+
+def _skill_files() -> list[Path]:
+    return sorted(SKILL_DIR.rglob("SKILL.md")) if SKILL_DIR.is_dir() else []
+
+
+def _md_table_domain_rows(text: str) -> list[tuple[str, int]]:
+    """抓「业务域 | 数量 | …」形状的表格行，返回 (域名, 数量)。"""
+    rows: list[tuple[str, int]] = []
+    for line in text.split("\n"):
+        m = re.match(r"^\|\s*([^|]+?)\s*\|\s*(\d+)\s*\|", line)
+        if m:
+            rows.append((m.group(1), int(m.group(2))))
+    return rows
+
+
+@pytest.mark.parametrize("skill_md", _skill_files(), ids=lambda p: p.parent.name)
+def test_skill_md_tool_count_matches_code(skill_md: Path):
+    """SKILL.md 里出现的每一处「N 个工具」都必须等于代码实际值。"""
+    actual = len(_actual_tool_names())
+    text = skill_md.read_text(encoding="utf-8")
+    claims = [int(n) for n in re.findall(r"(\d+)\s*个工具", text)]
+    assert claims, f"{skill_md.relative_to(ROOT)} 里找不到「N 个工具」声明，取数逻辑可能已失效"
+    wrong = sorted({c for c in claims if c != actual})
+    assert not wrong, (
+        f"{skill_md.relative_to(ROOT)} 声明 {wrong} 个工具，代码实际 {actual} 个 —— "
+        "这份文件会提交到技能商店，数字必须跟仓库对齐"
+    )
+
+
+@pytest.mark.parametrize("skill_md", _skill_files(), ids=lambda p: p.parent.name)
+def test_skill_md_domain_table_agrees_with_readme(skill_md: Path):
+    """SKILL.md 的业务域表格要跟 README 同源：行数一致、合计等于工具总数。"""
+    text = skill_md.read_text(encoding="utf-8")
+    rows = _md_table_domain_rows(text)
+    if not rows:
+        pytest.skip(f"{skill_md.relative_to(ROOT)} 没有带数量列的业务域表格")
+
+    actual = len(_actual_tool_names())
+    total = sum(count for _, count in rows)
+    assert total == actual, (
+        f"{skill_md.relative_to(ROOT)} 业务域表格合计 {total}，代码实际 {actual} —— "
+        f"逐行：{[f'{n}={c}' for n, c in rows]}"
+    )
+    assert len(rows) == len(_readme_domain_rows()), (
+        f"{skill_md.relative_to(ROOT)} 有 {len(rows)} 个业务域，"
+        f"README 有 {len(_readme_domain_rows())} 个，两份对外清单口径不一致"
+    )
+
+
+@pytest.mark.parametrize("skill_md", _skill_files(), ids=lambda p: p.parent.name)
+def test_skill_md_keeps_unofficial_disclaimer(skill_md: Path):
+    """技能商店页面属对外长文档，必须保留「第三方开源·非金蝶官方」声明。"""
+    text = skill_md.read_text(encoding="utf-8")
+    assert "非金蝶官方" in text, (
+        f"{skill_md.relative_to(ROOT)} 缺少「非金蝶官方」声明，存在品牌争议风险"
     )

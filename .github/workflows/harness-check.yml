@@ -8,6 +8,12 @@ on:
       - 'tests/**/*.py'
       - 'pyproject.toml'
       - '.github/workflows/harness-check.yml'
+      # 下面这几个是对外清单（工具数 / 业务域 / 版本号 / 非官方声明）。
+      # 只改它们而不动代码时，原来的 path 过滤会让检查整个跳过，
+      # 等于一致性测试形同虚设 —— 所以一并纳入触发范围。
+      - 'README.md'
+      - 'server.json'
+      - 'skill/**/SKILL.md'
   pull_request:
 
 jobs:

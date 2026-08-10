@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Publish to PyPI & MCP Registry
 
 on:
   push:
@@ -6,12 +6,17 @@ on:
       - "v*"
   workflow_dispatch:
 
-# PyPI 可信发布(Trusted Publishing / OIDC)：无需任何 token。
-# 前置：在 pypi.org 项目 kingdee-mcp → Manage → Publishing 添加可信发布者，
-#       配置 Owner=WaHaiLong, Repository=KingdeeMCP, Workflow=publish.yml, Environment=(空)。
-# 本工作流须有 `id-token: write` 权限，twine 会自动用 OIDC 令牌上传。
+# 两段发布，均免 token：
+# 1) PyPI 可信发布(Trusted Publishing / OIDC)：
+#    前置：在 pypi.org 项目 kingdee-mcp → Manage → Publishing 添加可信发布者，
+#          配置 Owner=WaHaiLong, Repository=KingdeeMCP, Workflow=publish.yml, Environment=(空)。
+# 2) 官方 MCP Registry (registry.modelcontextprotocol.io)：
+#    用 GitHub OIDC 登录（mcp-publisher login github-oidc），无需任何 secret。
+#    命名空间 io.github.WaHaiLong/* 由本仓库所有者身份自动授权。
+# 3) GitHub Release：把这次发布正式登在仓库首页，并推给 star 过的用户。
+# 前两者依赖 `id-token: write`，第三个依赖 `contents: write`。
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -34,3 +39,77 @@ jobs:
 
       - name: Publish to PyPI (Trusted Publishing, no token)
         run: twine upload dist/*
+
+      # ---------- 以下为官方 MCP Registry 上架 ----------
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "解析出的版本号：${VERSION}"
+
+      # ---------- 发一条 GitHub Release ----------
+      # 为什么不能只打 tag（以下三条均已实测/查证，不含推测）：
+      #   1. GitHub 的 Watch → Custom 里可勾选的事件类型明确包含 "releases"，
+      #      但没有 "tags" 这一项 —— 也就是说只打 tag，订阅了本仓库更新的人
+      #      一条通知都收不到，必须建 Release 才会触发。
+      #   2. 本仓库历史 Release 数为 0，所以首页右侧根本没有 Releases 区块，
+      #      访客看不到"最新版本是哪个"。建了才会出现。
+      #   3. /releases.atom 订阅端点实测可用（HTTP 200），聚合站和 RSS 可以抓，
+      #      但目前是空的 —— 因为一个 Release 都没有。
+      #   顺带把 whl / tar.gz 挂成附件，不方便连 PyPI 的用户可以直接下。
+      #   （注：没有查到官方文档说 Release 会推进 star 用户的首页动态流，
+      #     所以不拿这条当理由，上面三条已经足够。）
+      # 放在 PyPI 发布之后、Registry 之前：Registry 那步要轮询等 PyPI 索引、有失败可能，
+      # 不能让它把 Release 挡掉。
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V='${{ steps.ver.outputs.version }}'
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "v${V}" \
+            --generate-notes \
+            --verify-tag \
+            dist/*
+
+      - name: Sync version into server.json
+        run: |
+          V='${{ steps.ver.outputs.version }}'
+          jq --arg v "$V" '.version = $v | .packages[0].version = $v' server.json > server.tmp
+          mv server.tmp server.json
+          cat server.json
+
+      # 注册表会去 PyPI 拉取包描述校验 mcp-name 标记，
+      # 刚上传的版本需要几十秒才可查，这里轮询等待，避免 "Package validation failed"。
+      - name: Wait for PyPI to index the new version
+        run: |
+          V='${{ steps.ver.outputs.version }}'
+          for i in $(seq 1 30); do
+            FOUND=$(curl -sf "https://pypi.org/pypi/kingdee-mcp/${V}/json" -o /dev/null -w "%{http_code}" || true)
+            if [ "$FOUND" = "200" ]; then
+              echo "PyPI 已索引 ${V}（第 ${i} 次探测）"
+              exit 0
+            fi
+            echo "等待 PyPI 索引 ${V} ... (${i}/30)"
+            sleep 10
+          done
+          echo "::error::PyPI 在 5 分钟内仍未索引 ${V}，跳过注册表发布。可稍后手动重跑本工作流。"
+          exit 1
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          chmod +x mcp-publisher
+
+      - name: Authenticate to MCP Registry (GitHub OIDC, no secret)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server to MCP Registry
+        run: ./mcp-publisher publish

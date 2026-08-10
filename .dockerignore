@@ -1,0 +1,45 @@
+# 构建镜像时只需要 pyproject.toml / README.md / LICENSE / src/，
+# 其余一律排除，既加快构建也避免把凭据带进镜像。
+.git
+.github
+.gitignore
+.venv
+venv
+env
+__pycache__
+**/__pycache__
+*.py[cod]
+*.egg-info
+.eggs
+dist
+build
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# 不参与运行的目录
+tests
+evals
+harness
+docs
+examples
+skill
+expert
+scripts
+
+# 凭据类，绝不进镜像
+.env
+.env.*
+!.env.example
+.mcp.json
+*.pem
+*.key
+
+# 杂项
+*.log
+.DS_Store
+node_modules
+CLAUDE.md
+PUBLISH.md

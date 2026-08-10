@@ -33,24 +33,28 @@ description: 基于已连接的 kingdee-mcp（第三方开源金蝶云星空 MCP
 - "审核这几张采购入库单：12345, 12346, 12347"
 - "采购订单在数据库里对应哪张表"（需配置 MCP_SQLSERVER_*）
 
-## 三、可用工具（kingdee-mcp，共 86 个，按业务域）
+## 三、可用工具（kingdee-mcp，共 99 个，16 个业务域）
 
-| 业务域 | 代表性工具 | 说明 |
-|--------|-----------|------|
-| 通用单据 | `kingdee_save_bill` · `kingdee_submit_bills` · `kingdee_audit_bills` · `kingdee_validate_bill` · `kingdee_push_and_audit` | 新建/提交/审核/下推 |
-| 生产制造 | `kingdee_query_production_orders` · `kingdee_save_production_order` · `kingdee_query_mrp_result` | 生产订单、MRP |
-| 成本核算 | `kingdee_query_material_cost` · `kingdee_query_cost_calculation` · `kingdee_save_cost_adjustment` | 材料成本、成本计算 |
-| 固定资产 | `kingdee_query_fixed_asset` · `kingdee_save_asset` · `kingdee_query_asset_depreciation` | 资产卡片、折旧 |
-| 库存 | `kingdee_query_inventory` · `kingdee_query_stock_bills` · `kingdee_push_stock_transfer` | 即时库存、出入库 |
-| 审计合规 | `kingdee_query_operation_logs` · `kingdee_query_change_log` · `kingdee_create_and_audit` | 操作/变更日志 |
-| 采购 | `kingdee_query_purchase_orders` · `kingdee_query_purchase_requisitions` | 采购订单/申请 |
-| 销售 | `kingdee_query_sale_orders` · `kingdee_query_sale_quotations` | 销售订单/报价 |
-| 工作流 | `kingdee_query_pending_approvals` · `kingdee_workflow_approve` | 待审/审批 |
-| 基础资料 | `kingdee_query_materials` · `kingdee_query_partners` · `kingdee_query_user` | 物料/往来/用户 |
-| 元数据探查 | `kingdee_list_forms` · `kingdee_get_fields` · `kingdee_get_bill_template` · `kingdee_discover_tables` | 表单/字段/库表 |
-| 系统/统计 | `kingdee_query_system_config` · `kingdee_usage_stats` · `kingdee_usage_report` | 配置/用量 |
+| 业务域 | 数量 | 代表性工具 | 说明 |
+|--------|------|-----------|------|
+| 通用单据 | 15 | `kingdee_save_bill` · `kingdee_submit_bills` · `kingdee_audit_bills` · `kingdee_validate_bill` · `kingdee_push_bill` | 新建/提交/审核/下推/作废/关闭 |
+| 生产制造 | 12 | `kingdee_query_production_orders` · `kingdee_save_production_order` · `kingdee_query_mrp_result` | 生产订单、MRP、领料、汇报 |
+| 成本核算 | 12 | `kingdee_query_material_cost` · `kingdee_query_cost_calculation` · `kingdee_save_cost_adjustment` | 材料成本、成本计算、成本调整 |
+| 库存 | 9 | `kingdee_query_inventory` · `kingdee_query_stock_bills` · `kingdee_push_stock_transfer` | 即时库存、出入库、调拨 |
+| 元数据/探查 | 8 | `kingdee_list_forms` · `kingdee_get_fields` · `kingdee_get_bill_template` · `kingdee_discover_tables` | 表单/字段/库表结构 |
+| 系统/其他 | 8 | `kingdee_query_system_config` · `kingdee_query_quality_inspections` · `kingdee_query_expense_reimburse` | 系统配置、质检、费用报销 |
+| 固定资产 | 6 | `kingdee_query_fixed_asset` · `kingdee_save_asset` · `kingdee_query_asset_depreciation` | 资产卡片、折旧、转移、报废 |
+| 审计合规 | 6 | `kingdee_query_operation_logs` · `kingdee_query_change_log` · `kingdee_query_permission_changes` | 操作/变更/权限变更日志 |
+| 采购 | 5 | `kingdee_query_purchase_orders` · `kingdee_query_purchase_requisitions` · `kingdee_query_purchase_inquiry` | 采购订单/申请/询价/进度 |
+| 基础资料/权限 | 5 | `kingdee_query_materials` · `kingdee_query_partners` · `kingdee_query_user` · `kingdee_query_role` | 物料/往来/用户/角色/权限 |
+| 销售 | 4 | `kingdee_query_sale_orders` · `kingdee_query_sale_quotations` · `kingdee_query_sales_outstock` | 销售订单/报价/出库/发货通知 |
+| 工作流/审批 | 4 | `kingdee_query_pending_approvals` · `kingdee_workflow_approve` · `kingdee_query_approval_flow` | 待审/审批/流程状态 |
+| 统计 | 2 | `kingdee_usage_stats` · `kingdee_usage_report` | 用量统计、使用报告 |
+| 委外加工 | 1 | `kingdee_query_outsource_orders` | 委外订单：在制量/逾期/回货交期 |
+| 财务报表 | 1 | `kingdee_query_report` | 科目余额表、账龄分析表等总账报表 |
+| 财务收款 | 1 | `kingdee_query_receipts` | 收款单：实收金额/结算方式/核销金额 |
 
-> 完整 86 个工具见 `src/kingdee_mcp/server.py`。元数据探查含 4 个 SQL Server 工具（`kingdee_discover_tables` / `kingdee_discover_columns` / `kingdee_describe_table` / `kingdee_discover_metadata_candidates`），需配置 `MCP_SQLSERVER_*`。
+> 完整 99 个工具见 `src/kingdee_mcp/server.py`。元数据探查含 4 个 SQL Server 工具（`kingdee_discover_tables` / `kingdee_discover_columns` / `kingdee_describe_table` / `kingdee_discover_metadata_candidates`），需配置 `MCP_SQLSERVER_*`。
 
 ## 四、使用约定
 

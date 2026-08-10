@@ -1,0 +1,112 @@
+name: Docker Image
+
+# 两件事：
+#   1) 每个 PR / 每次进 main：构建镜像并跑冒烟测试 —— 保证 Dockerfile 不会悄悄坏掉。
+#      （Dockerfile 属于"不跑就不知道坏没坏"的东西，只放仓库里不验证等于没有。）
+#   2) 打 v* tag：把镜像推到 GHCR，用户可以直接 docker run，不用自己 clone 构建。
+#
+# 本 job 与 publish.yml 相互独立：这里失败不会影响 PyPI 发包和 MCP Registry 上架。
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 先只构建到本地 daemon，冒烟测试通过之后才谈推送
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: kingdee-mcp:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 冒烟测试不需要真实金蝶凭据：
+      #   --help  能打印用法      => 包装好了、入口点注册成功
+      #   --check 在缺变量时退 1  => 代码能 import 起来、参数解析正常
+      # 这两条足以拦住"镜像构建成功但一跑就崩"的情况。
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+
+          echo "--- kingdee-mcp --help ---"
+          docker run --rm kingdee-mcp:ci --help
+
+          echo "--- kingdee-mcp --check（无凭据，期望退出码 1）---"
+          set +e
+          OUT="$(docker run --rm kingdee-mcp:ci --check 2>&1)"
+          CODE=$?
+          set -e
+          echo "$OUT"
+
+          if [ "$CODE" != "1" ]; then
+            echo "::error::--check 期望退出码 1（缺环境变量），实际拿到 $CODE"
+            exit 1
+          fi
+          if ! echo "$OUT" | grep -q "缺少环境变量"; then
+            echo "::error::--check 输出里没有预期的『缺少环境变量』提示，入口逻辑可能已变"
+            exit 1
+          fi
+          echo "冒烟测试通过。"
+
+      # ---------- 以下仅在打 tag 时执行：推 GHCR ----------
+
+      - name: Resolve image name and version
+        if: github.ref_type == 'tag'
+        id: meta
+        run: |
+          # GHCR 只接受全小写的镜像名，而仓库名里有大写字母
+          NAME="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "name=${NAME}"       >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "镜像：${NAME}:${VERSION}"
+
+      - name: Log in to GHCR
+        if: github.ref_type == 'tag'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 只发 linux/amd64：arm64 需要 QEMU 交叉编译，构建时间翻几倍，
+      # 而 Apple Silicon / Docker Desktop 能自动模拟运行 amd64 镜像。
+      # 以后确有 arm64 服务器需求，在这里加 platforms: linux/amd64,linux/arm64 即可。
+      - name: Build and push to GHCR
+        if: github.ref_type == 'tag'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.meta.outputs.name }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.name }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.licenses=MIT
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

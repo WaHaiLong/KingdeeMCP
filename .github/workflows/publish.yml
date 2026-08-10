@@ -13,9 +13,10 @@ on:
 # 2) 官方 MCP Registry (registry.modelcontextprotocol.io)：
 #    用 GitHub OIDC 登录（mcp-publisher login github-oidc），无需任何 secret。
 #    命名空间 io.github.WaHaiLong/* 由本仓库所有者身份自动授权。
-# 两者都依赖 `id-token: write`。
+# 3) GitHub Release：把这次发布正式登在仓库首页，并推给 star 过的用户。
+# 前两者依赖 `id-token: write`，第三个依赖 `contents: write`。
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -51,6 +52,32 @@ jobs:
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "解析出的版本号：${VERSION}"
+
+      # ---------- 发一条 GitHub Release ----------
+      # 为什么不能只打 tag（以下三条均已实测/查证，不含推测）：
+      #   1. GitHub 的 Watch → Custom 里可勾选的事件类型明确包含 "releases"，
+      #      但没有 "tags" 这一项 —— 也就是说只打 tag，订阅了本仓库更新的人
+      #      一条通知都收不到，必须建 Release 才会触发。
+      #   2. 本仓库历史 Release 数为 0，所以首页右侧根本没有 Releases 区块，
+      #      访客看不到"最新版本是哪个"。建了才会出现。
+      #   3. /releases.atom 订阅端点实测可用（HTTP 200），聚合站和 RSS 可以抓，
+      #      但目前是空的 —— 因为一个 Release 都没有。
+      #   顺带把 whl / tar.gz 挂成附件，不方便连 PyPI 的用户可以直接下。
+      #   （注：没有查到官方文档说 Release 会推进 star 用户的首页动态流，
+      #     所以不拿这条当理由，上面三条已经足够。）
+      # 放在 PyPI 发布之后、Registry 之前：Registry 那步要轮询等 PyPI 索引、有失败可能，
+      # 不能让它把 Release 挡掉。
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V='${{ steps.ver.outputs.version }}'
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "v${V}" \
+            --generate-notes \
+            --verify-tag \
+            dist/*
 
       - name: Sync version into server.json
         run: |

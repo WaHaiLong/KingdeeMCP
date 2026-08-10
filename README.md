@@ -99,6 +99,49 @@ uvx kingdee-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 
 也可用环境变量代替命令行参数：`KINGDEE_MCP_TRANSPORT`（stdio/sse/streamable-http）、`KINGDEE_MCP_HOST`、`KINGDEE_MCP_PORT`。
 
+## Docker 部署
+
+不想在服务器上折腾 Python 环境的，直接用容器。
+
+**方式一：拉现成镜像（最快）**
+
+```bash
+docker run --rm -p 8000:8000 --env-file .env ghcr.io/wahailong/kingdeemcp:latest
+```
+
+镜像随每次发版自动构建推送，`latest` 跟最新 tag 走，也可以锁定具体版本号如 `:0.2.2`。
+
+**方式二：docker compose（推荐长期运行）**
+
+```bash
+cp .env.example .env      # 填 4 个 KINGDEE_* 变量
+docker compose up -d
+docker compose logs -f
+```
+
+**方式三：本地自己构建**
+
+```bash
+docker build -t kingdee-mcp .
+# 国内网络慢可换 pip 源：
+docker build --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ -t kingdee-mcp .
+```
+
+起来之后 MCP 客户端连 `http://<宿主机IP>:8000/mcp`（Streamable HTTP）。
+
+几个容易踩的点：
+
+- 容器默认以 `streamable-http` 模式监听 `0.0.0.0:8000`。**别改回 127.0.0.1** —— 那样只有容器内部能连，宿主机映射了端口也访问不到。
+- 想让容器当本地 MCP 客户端的子进程用（stdio 模式）：
+  ```bash
+  docker run -i --rm --env-file .env -e KINGDEE_MCP_TRANSPORT=stdio ghcr.io/wahailong/kingdeemcp:latest
+  ```
+- 配置对不对，先自检一把（不起服务，只跑一次金蝶登录）：
+  ```bash
+  docker run --rm --env-file .env ghcr.io/wahailong/kingdeemcp:latest --check
+  ```
+- 容器里跑的是金蝶 API 那部分。SQL Server 直连探查工具还需要额外装微软 ODBC 驱动（`msodbcsql18`），镜像里只预装了 `unixodbc` 基础库。
+
 ## 配置教程
 
 ### 第一步：金蝶云星空后台授权

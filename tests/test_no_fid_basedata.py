@@ -170,3 +170,30 @@ class TestQueryBillsNoFid:
 
         assert "notice" in out
         assert "手动填入" in out["notice"] or "不支持自动查询" in out["notice"]
+
+
+class TestErrorPrefilterIsCheap:
+    """正常查询不该为了找错误字符串而全量序列化整份结果"""
+
+    def test_row_array_short_circuits(self):
+        from kingdee_mcp.server import _looks_like_error
+        assert _looks_like_error([{"FNumber": "M001"}]) is False
+        assert _looks_like_error({"Result": [{"FNumber": "M001"}]}) is False
+
+    def test_error_shapes_pass_prefilter(self):
+        from kingdee_mcp.server import _looks_like_error
+        assert _looks_like_error(NO_FID_ERROR) is True
+        assert _looks_like_error([{"Result": {"ResponseStatus": {"Errors": []}}}]) is True
+
+    def test_prefilter_blocks_serialization(self, monkeypatch):
+        """行数据里恰好含 FID 字样也不能被误判成错误"""
+        calls = []
+        real_dumps = json.dumps
+
+        def spy(*a, **kw):
+            calls.append(1)
+            return real_dumps(*a, **kw)
+
+        monkeypatch.setattr(server.json, "dumps", spy)
+        assert _is_no_fid_error({"Result": [{"FID": "1", "FName": "列名 'FID' 无效"}]}) is False
+        assert not calls, "正常行数组不该走到序列化"

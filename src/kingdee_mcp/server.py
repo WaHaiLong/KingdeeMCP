@@ -2383,13 +2383,31 @@ def _is_no_fid_error(result: Any) -> bool:
     """判断查询响应是不是「列名 FID 无效」这一类错误。
 
     金蝶查询接口出错时既可能返回 dict（Result.ResponseStatus.Errors），
-    也可能返回 list 包一层，这里统一按文本兜底匹配，避免结构变动漏判。
+    也可能返回 list 包一层，所以文本兜底匹配，避免结构变动漏判。
+    但正常查询返回的是几十行业务数据，全量序列化去搜字符串太浪费 ——
+    先用 `_looks_like_error` 便宜地筛一遍，只有像错误的响应才进文本匹配。
     """
+    if not _looks_like_error(result):
+        return False
     try:
         blob = json.dumps(result, ensure_ascii=False).lower()
     except Exception:
         blob = str(result).lower()
     return any(p.lower() in blob for p in _NO_FID_ERR_PATTERNS)
+
+
+def _looks_like_error(result: Any) -> bool:
+    """便宜的预筛：正常查询返回行数组，出错才带 ResponseStatus / Errors。"""
+    if isinstance(result, dict):
+        rs = result.get("Result", result)
+        if isinstance(rs, dict):
+            return bool(rs.get("ResponseStatus") or rs.get("Errors")) \
+                or not rs.get("IsSuccess", True)
+        return False
+    if isinstance(result, list) and result and isinstance(result[0], dict):
+        # 金蝶偶尔把错误包成 [{"Result": {"ResponseStatus": ...}}]
+        return any(k in result[0] for k in ("Result", "ResponseStatus", "Errors"))
+    return False
 
 
 async def _post_query(form_id: str, field_keys: str, filter_string: str,

@@ -2324,6 +2324,106 @@ def _query_payload(form_id: str, field_keys: str, filter_string: str,
 
 
 # ─────────────────────────────────────────────
+# 「无 FID 视图」基础资料兼容层（closes #28）
+# ─────────────────────────────────────────────
+# 现象：查 BD_Currency / BD_AccountBook / BD_VOUCHERGROUP / BD_RateType 等基础资料时，
+#       服务端返回「列名 'FID' 无效。」，即使 FieldKeys 里没写 FID 也报。
+# 根因：这些基础资料的查询视图（如 V_BD_CURRENCY）没有 FID 列（主键是 FCURRENCYID 之类），
+#       而 ExecuteBillQuery 会把 FieldKeys / **OrderString** 原样拼进 SQL。
+#       QueryInput.order_string 默认值是 "FID DESC" —— 用户没传排序时它照样注入 FID，
+#       所以「不含 FID 的 field_keys 仍然报错」。这是本包的默认值问题，不是金蝶硬限制。
+# 策略：① 已知名单先降级（不发 FID）；② 未知表单撞上该错误则自动去 FID 重试一次，
+#       并把它记进运行时名单，同一进程后续直接走降级路径；③ 仍失败则给人话提示。
+
+NO_FID_FORMS: frozenset = frozenset({
+    "BD_CURRENCY",        # 币别
+    "BD_ACCOUNTBOOK",     # 账簿
+    "BD_VOUCHERGROUP",    # 凭证字
+    "BD_RATETYPE",        # 汇率类型
+    "BD_PERIOD",          # 会计期间
+    "BD_ACCOUNTTABLE",    # 科目表
+    "BD_SETTLETYPE",      # 结算方式
+    "BD_TAXRATE",         # 税率（部分版本视图无 FID）
+})
+
+# 运行时学到的无 FID 表单（撞过一次错就记住，避免每次都白跑一趟）
+_LEARNED_NO_FID_FORMS: set = set()
+
+_NO_FID_ERR_PATTERNS = ("列名 'FID' 无效", "列名\"FID\"无效", "invalid column name 'fid'")
+
+
+def _form_lacks_fid(form_id: str) -> bool:
+    key = (form_id or "").strip().upper()
+    return key in NO_FID_FORMS or key in _LEARNED_NO_FID_FORMS
+
+
+def _strip_fid(field_keys: str, order_string: str) -> tuple:
+    """把 FieldKeys / OrderString 里的裸 FID 去掉。
+
+    只去裸 FID，`FSupplierId.FNumber`、`FIDX` 这类带前后缀的字段保持原样。
+    OrderString 去空后回退 FNumber ASC（基础资料一定有 FNumber），空排序部分环境会报错。
+    """
+    fk = ",".join(
+        f for f in (p.strip() for p in (field_keys or "").split(","))
+        if f and f.upper() != "FID"
+    )
+    od_parts = []
+    for seg in (order_string or "").split(","):
+        seg = seg.strip()
+        if not seg:
+            continue
+        if seg.split()[0].upper() == "FID":
+            continue
+        od_parts.append(seg)
+    od = ", ".join(od_parts)
+    return (fk or "FNumber,FName"), (od or "FNumber ASC")
+
+
+def _is_no_fid_error(result: Any) -> bool:
+    """判断查询响应是不是「列名 FID 无效」这一类错误。
+
+    金蝶查询接口出错时既可能返回 dict（Result.ResponseStatus.Errors），
+    也可能返回 list 包一层，这里统一按文本兜底匹配，避免结构变动漏判。
+    """
+    try:
+        blob = json.dumps(result, ensure_ascii=False).lower()
+    except Exception:
+        blob = str(result).lower()
+    return any(p.lower() in blob for p in _NO_FID_ERR_PATTERNS)
+
+
+async def _post_query(form_id: str, field_keys: str, filter_string: str,
+                      order_string: str, start_row: int, limit: int) -> tuple:
+    """查询单据/基础资料，自动兼容「无 FID 视图」表单。
+
+    Returns:
+        tuple: (result, notice)，notice 为降级说明（无降级时为空串）
+    """
+    notice = ""
+    fk, od = field_keys, order_string
+    if _form_lacks_fid(form_id):
+        fk, od = _strip_fid(field_keys, order_string)
+        notice = f"{form_id} 的查询视图没有 FID 列，已自动去掉 FID 字段与 FID 排序。"
+
+    result = await _post("query", _query_payload(form_id, fk, filter_string,
+                                                 od, start_row, limit))
+
+    # 未知表单撞上该错误 → 学习 + 去 FID 重试一次
+    if not notice and _is_no_fid_error(result):
+        _LEARNED_NO_FID_FORMS.add((form_id or "").strip().upper())
+        fk, od = _strip_fid(field_keys, order_string)
+        result = await _post("query", _query_payload(form_id, fk, filter_string,
+                                                     od, start_row, limit))
+        notice = f"{form_id} 的查询视图没有 FID 列，已自动去掉 FID 后重试。"
+
+    if _is_no_fid_error(result):
+        notice = (f"{form_id} 该基础资料不支持自动查询（查询视图缺主键列）。"
+                  f"请在金蝶界面查到它的 FNumber 后手动填入，"
+                  f"或用 kingdee_get_fields 确认可用字段。")
+    return result, notice
+
+
+# ─────────────────────────────────────────────
 # Pydantic 输入模型
 # ─────────────────────────────────────────────
 
@@ -2421,19 +2521,27 @@ async def kingdee_query_bills(params: QueryInput) -> str:
     适用 form_id 示例：PUR_PurchaseOrder（采购订单）、SAL_SaleOrder（销售订单）、
     STK_InStock（采购入库）、SAL_OUTSTOCK（销售出库）、STK_MisDelivery（其他出库）。
 
+    也可查基础资料：BD_Currency（币别）、BD_AccountBook（账簿）、
+    BD_VOUCHERGROUP（凭证字）、BD_RateType（汇率类型）等。这类表单的查询视图
+    没有 FID 列，工具会自动去掉 FID 字段与 FID 排序，无需调用方特殊处理（#28）。
+
     Returns:
-        str: JSON，含 form_id / count / has_more / data 字段
+        str: JSON，含 form_id / count / has_more / data 字段；
+             发生自动降级时额外带 notice 字段说明
     """
     try:
-        result = await _post("query", _query_payload(
+        result, notice = await _post_query(
             params.form_id, params.field_keys, params.filter_string,
             params.order_string, params.start_row, params.limit
-        ))
+        )
         rows = _rows(result)
-        return _fmt({
+        out = {
             "form_id": params.form_id, "start_row": params.start_row,
             "count": len(rows), "has_more": len(rows) == params.limit, "data": rows,
-        })
+        }
+        if notice:
+            out["notice"] = notice
+        return _fmt(out)
     except Exception as e:
         return _err(e)
 

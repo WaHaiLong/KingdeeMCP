@@ -221,6 +221,26 @@ async def test_log_failure_does_not_hide_successful_upload(api):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "invalid"])
+async def test_invalid_attachment_timeout_stops_before_network(api, monkeypatch, value):
+    monkeypatch.setenv("KINGDEE_ATTACHMENT_TIMEOUT", value)
+    result = json.loads(await server.kingdee_upload_attachment(upload_input()))
+    assert not result["success"] and not api[0]
+    api[2].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_attachment_timeout_is_configurable_without_extending_connect_timeout(api, monkeypatch):
+    monkeypatch.setenv("KINGDEE_ATTACHMENT_TIMEOUT", "180")
+    api[1].append(uploaded())
+    result = json.loads(await server.kingdee_upload_attachment(upload_input()))
+    assert result["success"]
+    timeouts = api[0][0].extensions["timeout"]
+    assert timeouts["read"] == 180 and timeouts["write"] == 180
+    assert timeouts["connect"] == 30
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("exception", [httpx.ReadTimeout("hidden payload"),
                                        httpx.ConnectError("hidden payload"),
                                        httpx.Response(503, text="hidden payload")])

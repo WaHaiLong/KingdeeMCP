@@ -11,6 +11,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -2429,13 +2430,17 @@ async def _post_attachment(ep_key: str, payload: dict) -> Any:
     success = False
     error_type = ""
     try:
+        timeout_seconds = float(os.getenv("KINGDEE_ATTACHMENT_TIMEOUT", "120"))
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("KINGDEE_ATTACHMENT_TIMEOUT 必须为有限正数（秒）")
         if not _session_id:
             async with _get_session_lock():
                 if not _session_id:
                     await _login()
         # 💡 REMEMBER: 附件 HTTP 请求必须使用 {"data": JSON字符串}；V6.0 示例的参数数组不能直接作为 HTTP 请求体，否则服务端反序列化失败。
         parameters = {"data": json.dumps(payload, ensure_ascii=False)}
-        async with httpx.AsyncClient(timeout=30, proxy=None,
+        # 💡 REMEMBER: 大文件最后一块触发文件服务器存储，实测耗时约 76 秒；附件传输默认等待 120 秒，连接超时仍为 30 秒。
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=30), proxy=None,
                                     transport=httpx.AsyncHTTPTransport(http1=True)) as client:
             for attempt in range(2):
                 session = _session_id

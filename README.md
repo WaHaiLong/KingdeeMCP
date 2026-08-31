@@ -150,6 +150,7 @@ uvx kingdee-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 | `KINGDEE_ACCT_ID` | 账套ID | `your-acct-id` |
 | `KINGDEE_USERNAME` | 金蝶账号 | `your-username` |
 | `KINGDEE_PASSWORD` | 金蝶账号密码（ValidateUser 登录，必填） | `your-password` |
+| `KINGDEE_ATTACHMENT_TIMEOUT` | 附件传输读写等待时间（秒，可选，默认 120；连接超时仍为 30） | `120` |
 | `MCP_SQLSERVER_HOST` | SQL Server 主机（可选，用于数据库探查） | `localhost` |
 | `MCP_SQLSERVER_PORT` | SQL Server 端口（默认 1433） | `1433` |
 | `MCP_SQLSERVER_DATABASE` | 数据库名 | `AIS20260309171043` |

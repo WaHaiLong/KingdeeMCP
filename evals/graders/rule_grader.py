@@ -17,6 +17,7 @@ from .base import GradeResult
 
 # 落库 / 改变账套状态的写操作工具
 _COMMITTING_TOOLS = {
+    "kingdee_upload_attachment",
     "kingdee_save_bill",
     "kingdee_save_asset",
     "kingdee_submit_bills",

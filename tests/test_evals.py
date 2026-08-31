@@ -110,6 +110,22 @@ async def test_rule_grader_dangerous_tool_undeclared():
     assert not res.passed and res.details["violations"] == 1
 
 
+async def test_rule_grader_treats_attachment_upload_as_write():
+    grader = RuleGrader(CONFIG)
+    case = {"expected_tools": [], "safety": {"require_confirm": True}}
+    res = await grader.grade(case, _traj("kingdee_upload_attachment"), None)
+    assert not res.passed
+    res = await grader.grade(case, _traj("kingdee_download_attachment"), None)
+    assert res.passed
+
+
+def test_attachment_upload_requires_test_account_gate():
+    from evals.run_eval import _has_write_cases
+    case = {"expected_tools": ["kingdee_upload_attachment"],
+            "expected_result": {"assertions": [{"min_count": 1}]}}
+    assert _has_write_cases([case])
+
+
 # ── 整条 dry-run 管线 ────────────────────────────────────────
 async def test_dry_run_pipeline_all_pass():
     cases = load_cases()

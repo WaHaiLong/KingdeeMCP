@@ -2433,8 +2433,8 @@ async def _post_attachment(ep_key: str, payload: dict) -> Any:
             async with _get_session_lock():
                 if not _session_id:
                     await _login()
-        # 💡 REMEMBER: V6.0 附件接口的无组件示例发送 [JSON字符串]，不是 Save 的 Model 包装。
-        parameters = [json.dumps(payload, ensure_ascii=False)]
+        # 💡 REMEMBER: 附件 HTTP 请求必须使用 {"data": JSON字符串}；V6.0 示例的参数数组不能直接作为 HTTP 请求体，否则服务端反序列化失败。
+        parameters = {"data": json.dumps(payload, ensure_ascii=False)}
         async with httpx.AsyncClient(timeout=30, proxy=None,
                                     transport=httpx.AsyncHTTPTransport(http1=True)) as client:
             for attempt in range(2):

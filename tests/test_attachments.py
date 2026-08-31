@@ -107,8 +107,8 @@ async def test_header_upload_wire_contract_and_ids(api):
     assert calls[0].headers["cookie"] == "kdservice-sessionid=test-session"
     assert calls[0].headers["content-type"] == "application/json"
     outer = json.loads(calls[0].content)
-    assert isinstance(outer, list) and len(outer) == 1 and isinstance(outer[0], str)
-    assert json.loads(outer[0]) == {
+    assert isinstance(outer, dict) and set(outer) == {"data"} and isinstance(outer["data"], str)
+    assert json.loads(outer["data"]) == {
         "FileName": "合同.txt", "FormId": "PUR_PurchaseOrder", "InterId": "100723",
         "BillNO": "CGDD000198", "IsLast": True, "SendByte": "77u/MTIzNA==",
     }
@@ -133,10 +133,10 @@ async def test_entry_chunk_upload_carries_file_id_and_completion(api):
     final = json.loads(await server.kingdee_upload_attachment(upload_input(
         file_id=first["file_id"], entry_key="FPOOrderEntry", entry_id="101300", send_byte="YQ==",
     )))
-    payload = json.loads(json.loads(calls[1].content)[0])
+    payload = json.loads(json.loads(calls[1].content)["data"])
     assert payload["FileId"] == "file-123" and payload["IsLast"] is True
     assert payload["Entrykey"] == "FPOOrderEntry" and payload["EntryinterId"] == "101300"
-    assert json.loads(json.loads(calls[0].content)[0])["AliasFileName"] == "合同"
+    assert json.loads(json.loads(calls[0].content)["data"])["AliasFileName"] == "合同"
     assert final["next_action"] is None and final["is_last"] is True
 
 
@@ -150,7 +150,7 @@ async def test_download_chunks_preserve_server_cursor(api):
     assert first["next_action"] == "download_attachment" and not first["is_last"]
     last = json.loads(await server.kingdee_download_attachment(
         server.AttachmentDownloadInput(file_id="file-123", start_index=first["start_index"])))
-    assert json.loads(json.loads(calls[1].content)[0]) == {"FileId": "file-123", "StartIndex": 4194304}
+    assert json.loads(json.loads(calls[1].content)["data"]) == {"FileId": "file-123", "StartIndex": 4194304}
     assert calls[0].url.path.endswith("DynamicFormService.AttachmentDownLoad.common.kdsvc")
     assert last["next_action"] is None and last["file_name"] == "合同.txt"
     # The manual's cursor can exceed FileSize; do not calculate it from decoded length.

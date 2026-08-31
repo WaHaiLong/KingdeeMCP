@@ -88,12 +88,14 @@
   附件及 FileId，不要直接重试同一块或重建附件。
 - 仅 HTTP 401 自动重登重试一次；HTTP 200 业务失败（包括会话错误）、超时及其他 HTTP 错误均
   交由调用方核查处理。不会根据文件名或文件内容中的“session/会话”文字重传。
-- 使用已有 ValidateUser 会话 Cookie。请求遵循说明书“无引用组件示例”：JSON 数组中包含一个
-  JSON 字符串参数（`["{...}"]`），不使用 Save 的 `formid`/`Model` 包装。
+- 使用已有 ValidateUser 会话 Cookie。HTTP 请求体为 `{"data":"{...}"}`，data 的值是内层
+  数据包的 JSON 字符串，不使用 Save 的 `formid`/`Model` 包装。说明书示例中的参数数组不能
+  直接作为 HTTP 请求体；测试账套实测会在反序列化阶段报错。
 - 端点分别为 `DynamicFormService.AttachmentUpLoad.common.kdsvc` 和
   `DynamicFormService.AttachmentDownLoad.common.kdsvc`，前缀均为
   `Kingdee.BOS.WebApi.ServicesStub.`。
 - 使用日志只记录接口类型、耗时、成功状态和错误类别，不记录附件内容、文件名、FileId、会话
   或服务端响应。MCP 客户端自己的会话记录由客户端管理。
 
-当前验证为按 V6.0 规范编写的 HTTP mock 测试；发布前仍需在独立测试账套验证表头、分录及分块上传下载。
+2026-08-31 已在独立测试账套完成采购订单草稿的表头附件上传、下载字节比对，并确认附件数为 1、
+单据仍为创建状态。分录附件及大文件分块传输目前仍以 HTTP mock 测试验证，发布前需补充真实账套联调。

@@ -65,6 +65,11 @@
 | 审批流操作 | [`workflow-approve.md`](./workflow-approve.md) |
 | 单据生命周期与操作提示 | [`workflow-hints.md`](./workflow-hints.md) |
 
+### 单据附件
+| 场景 | 文件 |
+|------|------|
+| 上传、下载及分块续传附件 | [`bill-attachments.md`](./bill-attachments.md) |
+
 ## 使用方式
 
 复制示例中的用户问题，直接发给 AI（Claude、Cursor、OpenClaw 等），即可完成对应操作。

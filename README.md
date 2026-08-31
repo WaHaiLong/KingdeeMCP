@@ -55,7 +55,7 @@ AI 会自动调用金蝶 API 完成操作，无需手动登录 ERP 界面。
 
 ## 功能特性
 
-- **87 个工具**：覆盖生产、成本、资产、审计、采购、销售、库存、财务报表等 13+ 大业务域
+- **99 个工具**：覆盖生产、成本、资产、审计、采购、销售、库存、单据附件、财务报表等 13+ 大业务域
 - **元数据动态查询**：`get_bill_template` / `validate_bill` / `refresh_metadata`，元数据本地缓存
 - **4 个 SQL Server 探查工具**：搜索表、搜索字段、查看表结构、金蝶元数据候选发现
 - **自然语言操作**：用中文直接描述需求，AI 自动转换为 API 调用
@@ -170,7 +170,7 @@ uvx kingdee-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 
 ## 可用工具列表
 
-共 **87 个工具**，按业务域分组（每组列出代表性工具，完整清单见 `src/kingdee_mcp/server.py`）：
+共 **99 个工具**，按业务域分组（每组列出代表性工具，完整清单见 `src/kingdee_mcp/server.py`）：
 
 | 业务域 | 数量 | 代表性工具 |
 |--------|------|-----------|
@@ -188,6 +188,7 @@ uvx kingdee-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 | 系统/查询 | 4 | `kingdee_query_system_config` · `kingdee_query_quality_inspections` · `kingdee_query_expense_reimburse` |
 | 统计 | 2 | `kingdee_usage_stats` · `kingdee_usage_report` |
 | 财务报表 | 1 | `kingdee_query_report`（GetSysReportData 专用端点，查科目余额表/账龄分析表等总账报表） |
+| 单据附件 | 2 | `kingdee_upload_attachment` · `kingdee_download_attachment`（表头/分录附件、分块传输） |
 
 > 元数据探查含 4 个 SQL Server 工具（`kingdee_discover_tables` / `kingdee_discover_columns` / `kingdee_describe_table` / `kingdee_discover_metadata_candidates`），需配置 `MCP_SQLSERVER_*` 环境变量。
 
@@ -222,6 +223,16 @@ uvx kingdee-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 | `kingdee_audit_bills` | 审核单据 |
 | `kingdee_unaudit_bills` | 反审核单据 |
 | `kingdee_delete_bills` | 删除单据 |
+
+### 单据附件（WebAPI V6.0）
+
+| 工具名称 | 功能说明 |
+|----------|---------|
+| `kingdee_upload_attachment` | 上传 Base64 内容并绑定已存在的单据头或分录；单块最多 4 MiB，支持 FileId 续传 |
+| `kingdee_download_attachment` | 按 FileId 下载一块附件，返回 Base64、下一块位置和完成标志 |
+
+附件工具不读写 MCP 服务器上的本地文件。上传完成不会自动提交或审核单据。
+使用方式、字段映射和失败恢复见 [单据附件示例](./examples/bill-attachments.md)。
 
 ## 使用示例
 

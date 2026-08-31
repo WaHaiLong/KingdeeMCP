@@ -7,6 +7,8 @@ Harness 层：操作链约束（harness/）、反馈循环、结构化退出条�
 """
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -20,7 +22,7 @@ from dataclasses import dataclass, field
 import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.prompts.base import UserMessage
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ─────────────────────────────────────────────
 # 使用日志模块（改进反馈层）
@@ -649,6 +651,8 @@ _EP = {
     "unaudit": "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.UnAudit.common.kdsvc",
     "delete":  "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.Delete.common.kdsvc",
     "push":    "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.Push.common.kdsvc",
+    "attachment_upload": "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.AttachmentUpLoad.common.kdsvc",
+    "attachment_download": "Kingdee.BOS.WebApi.ServicesStub.DynamicFormService.AttachmentDownLoad.common.kdsvc",
     # 标准动作执行（撤销/作废/整单关闭/反关闭/禁用/反禁用等）：
     # ⚠️ 端点名：服务端真正认的是 ExecuteOperation（2026-08-07 QA 严过关真机实测；
     #    旧拼写 ExcuteOperation 虽返回 HTTP200 但实际空引用，勿再用）。
@@ -2359,6 +2363,219 @@ class BillIdsInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     form_id: str = Field(..., description="单据类型标识")
     bill_ids: List[str] = Field(..., description="单据内码 FID 列表", min_length=1)
+
+
+# A per-call MCP limit, not a Kingdee server limit. Larger files use chunks.
+_ATTACHMENT_CHUNK_BYTES = 4 * 1024 * 1024
+_ATTACHMENT_BASE64_LENGTH = 4 * ((_ATTACHMENT_CHUNK_BYTES + 2) // 3)
+
+
+class AttachmentUploadInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    form_id: str = Field(..., min_length=1, description="单据表单标识，例如 PUR_PurchaseOrder")
+    bill_id: str = Field(..., min_length=1, description="已存在单据的内码，对应 InterId")
+    bill_no: str = Field(..., min_length=1, description="单据编号，对应 BillNO")
+    file_name: str = Field(..., min_length=1, description="含扩展名的文件名，不是本地文件路径")
+    send_byte: str = Field(
+        ..., max_length=_ATTACHMENT_BASE64_LENGTH,
+        description="当前分块的标准 Base64 字符串，对应 SendByte；解码后最多 4 MiB，不含 data: 前缀",
+    )
+    is_last: bool = Field(default=True, strict=True, description="是否最后一块；单次上传为 true")
+    file_id: Optional[str] = Field(default=None, min_length=1, description="续传必填首次上传返回的 FileId；首次不填")
+    entry_key: Optional[str] = Field(default=None, min_length=1, description="分录附件的单据体标识，对应 Entrykey")
+    entry_id: Optional[str] = Field(default=None, min_length=1, description="分录内码，对应 EntryinterId；表头不填或 -1")
+    alias_file_name: Optional[str] = Field(default=None, description="附件别名，对应 AliasFileName")
+
+    @field_validator("send_byte")
+    @classmethod
+    def validate_base64(cls, value: str) -> str:
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except (ValueError, binascii.Error):
+            raise ValueError("send_byte 必须是标准 Base64 字符串") from None
+        if len(decoded) > _ATTACHMENT_CHUNK_BYTES:
+            raise ValueError("单块附件不能超过 4 MiB，请分块上传")
+        return value
+
+    @model_validator(mode="after")
+    def validate_entry(self):
+        if self.entry_key:
+            if self.entry_id in (None, "-1", "0"):
+                raise ValueError("分录附件必须同时提供 entry_key 和有效 entry_id")
+        elif self.entry_id not in (None, "-1"):
+            raise ValueError("指定分录 entry_id 时必须提供 entry_key")
+        return self
+
+
+class AttachmentDownloadInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    file_id: str = Field(..., min_length=1, description="上传返回的 FileId，不是附件内码 SuccessEntitys.Id")
+    start_index: int = Field(default=0, ge=0, strict=True, description="首次为 0；续传使用上次响应的 StartIndex")
+
+
+def _attachment_body(result: Any) -> dict:
+    body = result.get("Result", result) if isinstance(result, dict) else None
+    if not isinstance(body, dict) or not isinstance(body.get("ResponseStatus"), dict):
+        raise ValueError("附件接口响应缺少 ResponseStatus，无法确认操作结果")
+    if type(body["ResponseStatus"].get("IsSuccess")) is not bool:
+        raise ValueError("附件接口响应缺少有效 IsSuccess，无法确认操作结果")
+    return body
+
+
+async def _post_attachment(ep_key: str, payload: dict) -> Any:
+    """V6.0 单个 data 字符串参数；不使用 Save 的 formid/Model 包装。"""
+    global _session_id
+    started = time.perf_counter()
+    success = False
+    error_type = ""
+    try:
+        if not _session_id:
+            async with _get_session_lock():
+                if not _session_id:
+                    await _login()
+        # 💡 REMEMBER: V6.0 附件接口的无组件示例发送 [JSON字符串]，不是 Save 的 Model 包装。
+        parameters = [json.dumps(payload, ensure_ascii=False)]
+        async with httpx.AsyncClient(timeout=30, proxy=None,
+                                    transport=httpx.AsyncHTTPTransport(http1=True)) as client:
+            for attempt in range(2):
+                session = _session_id
+                resp = await client.post(
+                    _url(ep_key), json=parameters,
+                    headers={"Cookie": f"kdservice-sessionid={session}"},
+                )
+                # Only an explicit HTTP 401 is safe to replay for uploads.
+                # Never scan attachment names/content for session-related words.
+                if resp.status_code == 401 and attempt == 0:
+                    async with _get_session_lock():
+                        if _session_id == session:
+                            await _login()
+                    continue
+                resp.raise_for_status()
+                result = _safe_json(resp)
+                success = _attachment_body(result)["ResponseStatus"]["IsSuccess"]
+                if not success:
+                    error_type = "KingdeeBusinessError"
+                return result
+    except Exception as exc:
+        error_type = type(exc).__name__
+        raise
+    finally:
+        # No file bytes, filenames, FileId, server response or exception text in logs.
+        try:
+            log_tool_usage(f"api:{ep_key}", {}, (time.perf_counter() - started) * 1000,
+                           success, error_type=error_type)
+        except Exception:
+            pass  # Logging must not hide a successful upload and encourage a duplicate.
+
+
+def _attachment_result(result: Any, op: str) -> tuple[dict, dict]:
+    body = _attachment_body(result)
+    status = body["ResponseStatus"]
+    out = {"op": op, "success": status["IsSuccess"], "response_status": status}
+    if body.get("Message"):
+        out["message"] = body["Message"]
+    if not out["success"]:
+        out["errors"] = _parse_kingdee_errors(result) or [
+            {"message": body.get("Message") or "附件操作失败，请检查单据及附件权限"}
+        ]
+        # Keep a returned FileId for manual recovery, but never auto-resume failures.
+        if body.get("FileId"):
+            out["file_id"] = body["FileId"]
+    return out, body
+
+
+def _attachment_exception(exc: Exception, op: str) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        message = f"附件接口 HTTP {exc.response.status_code}"
+    elif isinstance(exc, httpx.RequestError):
+        message = f"附件接口网络异常 ({type(exc).__name__})"
+    else:
+        message = f"附件接口调用或响应校验失败 ({type(exc).__name__})"
+    out = {"op": op, "success": False, "errors": [{"message": message}]}
+    if op == "upload_attachment":
+        out["outcome_unknown"] = True
+        out["recovery_hint"] = (
+            "无法确认当前块是否已上传；先在金蝶核对附件及 FileId，勿自动重传或重新创建附件。"
+        )
+    return _fmt(out)
+
+
+@mcp.tool(
+    name="kingdee_upload_attachment",
+    annotations={"title": "上传单据附件", "readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": False},
+)
+async def kingdee_upload_attachment(params: AttachmentUploadInput) -> str:
+    """按 WebAPI V6.0 上传一块附件并绑定已存在的单据（表头或分录）。
+
+    直接传 Base64，不读取服务器本地文件。单块最多 4 MiB。
+    多块上传须按顺序调用，保持单据/分录/文件名一致，后续块传首次返回的 file_id，
+    只有最后一块 is_last=true。上传完成不触发单据提交或审核。
+    success=true 且 next_action=null 才表示全部上传完成；失败或结果未知时不要自动重传。
+    """
+    payload = {
+        "FileName": params.file_name, "FormId": params.form_id, "InterId": params.bill_id,
+        "BillNO": params.bill_no, "IsLast": params.is_last, "SendByte": params.send_byte,
+    }
+    for key, value in (("FileId", params.file_id), ("Entrykey", params.entry_key),
+                       ("EntryinterId", params.entry_id), ("AliasFileName", params.alias_file_name)):
+        if value is not None:
+            payload[key] = value
+    try:
+        result = await _post_attachment("attachment_upload", payload)
+        out, body = _attachment_result(result, "upload_attachment")
+        if out["success"]:
+            file_id = body.get("FileId")
+            if not isinstance(file_id, str) or not file_id.strip():
+                raise ValueError("附件上传响应缺少 FileId")
+            out.update(file_id=file_id, is_last=params.is_last,
+                       attachment_ids=[entity["Id"] for entity in body["ResponseStatus"].get("SuccessEntitys", [])
+                                       if isinstance(entity, dict) and entity.get("Id") is not None],
+                       next_action=None if params.is_last else "upload_attachment")
+            if not params.is_last:
+                out["next_action_desc"] = "按顺序上传下一块，携带 file_id，最后一块设置 is_last=true"
+        return _fmt(out)
+    except Exception as exc:
+        return _attachment_exception(exc, "upload_attachment")
+
+
+@mcp.tool(
+    name="kingdee_download_attachment",
+    annotations={"title": "下载单据附件", "readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False},
+)
+async def kingdee_download_attachment(params: AttachmentDownloadInput) -> str:
+    """按 WebAPI V6.0 下载一块附件，返回 Base64 file_part，不写服务器本地文件。
+
+    file_id 使用上传返回的 FileId，不是附件内码 attachment_ids。
+    首次 start_index=0；is_last=false 时用返回的 start_index 继续下载，直到 next_action=null。
+    每块分别 Base64 解码后按顺序拼接字节，不要直接拼接 Base64 字符串。
+    """
+    try:
+        result = await _post_attachment("attachment_download", {
+            "FileId": params.file_id, "StartIndex": params.start_index,
+        })
+        out, body = _attachment_result(result, "download_attachment")
+        if out["success"]:
+            is_last, start_index = body.get("IsLast"), body.get("StartIndex")
+            if type(is_last) is not bool or type(start_index) is not int or start_index < 0:
+                raise ValueError("附件下载响应缺少有效 IsLast/StartIndex")
+            if not is_last and start_index <= params.start_index:
+                raise ValueError("下载续传位置未前进，停止以避免无限循环")
+            part, file_size, file_name = body.get("FilePart"), body.get("FileSize"), body.get("FileName")
+            if not isinstance(part, str) or type(file_size) is not int or file_size < 0:
+                raise ValueError("附件下载响应缺少有效 FilePart/FileSize")
+            if not isinstance(file_name, str) or not file_name:
+                raise ValueError("附件下载响应缺少 FileName")
+            base64.b64decode(part, validate=True)
+            out.update(file_id=params.file_id, file_name=file_name, file_size=file_size,
+                       file_part=part, start_index=start_index, is_last=is_last,
+                       next_action=None if is_last else "download_attachment")
+            if not is_last:
+                out["next_action_desc"] = "使用本次返回的 start_index 下载下一块，分别解码后拼接字节"
+        return _fmt(out)
+    except Exception as exc:
+        return _attachment_exception(exc, "download_attachment")
 
 
 class PurchaseOrderProgressInput(BaseModel):

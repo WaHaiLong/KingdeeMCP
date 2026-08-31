@@ -48,6 +48,7 @@ def _has_write_cases(cases) -> bool:
         if (c.get("expected_result") or {}).get("assertions"):
             # 含写操作工具的用例需要安全闸
             wt = {"kingdee_save_bill", "kingdee_submit_bills", "kingdee_audit_bills",
+                  "kingdee_upload_attachment",
                   "kingdee_unaudit_bills", "kingdee_delete_bills", "kingdee_push_bill",
                   "kingdee_create_and_audit", "kingdee_push_and_audit", "kingdee_save_asset"}
             if wt & set(c.get("expected_tools", [])):

@@ -1,0 +1,73 @@
+# robots.txt — https://wahailong.github.io/KingdeeMCP/
+# 策略：对搜索引擎与生成式 AI 爬虫全面开放（GEO 友好），这些内容本就是公开开源文档。
+
+# ---------- 传统搜索引擎 ----------
+User-agent: Googlebot
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: Baiduspider
+Allow: /
+
+User-agent: Sogou
+Allow: /
+
+User-agent: 360Spider
+Allow: /
+
+User-agent: YisouSpider
+Allow: /
+
+# ---------- 生成式 AI / LLM 爬虫（GEO 关键：主动放行，让模型能抓取并引用本项目的准确事实） ----------
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: Claude-Web
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: CCBot
+Allow: /
+
+User-agent: cohere-ai
+Allow: /
+
+User-agent: Bytespider
+Allow: /
+
+User-agent: Amazonbot
+Allow: /
+
+User-agent: YouBot
+Allow: /
+
+User-agent: meta-externalagent
+Allow: /
+
+# ---------- 兜底 ----------
+User-agent: *
+Allow: /
+
+Sitemap: https://wahailong.github.io/KingdeeMCP/sitemap.xml

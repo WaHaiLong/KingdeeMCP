@@ -1,0 +1,118 @@
+/* Kingdee MCP 官网 - 留言板页面样式（浅色主题，与站点设计令牌一致） */
+:root{
+  --primary:#2563eb;--primary-dark:#1d4ed8;--secondary:#64748b;
+  --background:#f5f7fa;--surface:#ffffff;--surface-light:#eef1f6;
+  --text:#14161c;--text-muted:#5b616e;--border:#e3e7ed;--border-strong:#cdd3dc;
+  --success:#059669;--code-bg:#f1f5f9;--primary-tint:#eff4ff;
+  --shadow-sm:0 1px 2px rgba(20,22,28,.05);--shadow-md:0 6px 20px rgba(20,22,28,.08);--shadow-lg:0 16px 40px rgba(20,22,28,.14);
+  --font-sans:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --font-mono:ui-monospace,"Cascadia Code","Consolas","SFMono-Regular",monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--font-sans);background:var(--background);color:var(--text);line-height:1.6;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+.container{max-width:1200px;margin:0 auto;padding:0 24px}
+
+/* Header / Nav */
+header{position:sticky;top:0;left:0;right:0;z-index:100;background:rgba(255,255,255,.88);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+nav{display:flex;justify-content:space-between;align-items:center;height:64px;gap:20px;flex-wrap:wrap}
+.logo{display:flex;align-items:center;gap:12px;font-weight:700;font-size:1.2rem;color:var(--text)}
+.logo svg{width:32px;height:32px;flex-shrink:0}
+.nav-links{display:flex;gap:24px;list-style:none;flex-wrap:wrap}
+.nav-links a{color:var(--text-muted);font-size:.9rem;font-weight:500;transition:color .2s}
+.nav-links a:hover{color:var(--primary)}
+.nav-links a.active{color:var(--primary);font-weight:600}
+.github-btn{display:flex;align-items:center;gap:8px;padding:8px 16px;background:var(--surface);border:1px solid var(--border-strong);border-radius:8px;font-size:.9rem;font-weight:500;transition:all .2s;white-space:nowrap;box-shadow:var(--shadow-sm)}
+.github-btn:hover{border-color:var(--primary);color:var(--primary)}
+
+main{padding-top:0}
+
+/* Hero */
+.hero{padding:70px 0 30px;text-align:center}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:var(--primary-tint);border:1px solid rgba(37,99,235,.2);border-radius:20px;color:var(--primary-dark);font-size:.85rem;font-weight:600;margin-bottom:20px}
+.hero h1{font-size:2.6rem;font-weight:800;line-height:1.15;margin-bottom:18px;color:var(--text);letter-spacing:-.01em}
+.hero p{font-size:1.05rem;color:var(--text-muted);max-width:660px;margin:0 auto}
+
+/* 三步流程 */
+.flow{display:flex;justify-content:center;gap:14px;flex-wrap:wrap;margin:36px auto 0;max-width:900px}
+.flow-step{flex:1;min-width:200px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;text-align:left;box-shadow:var(--shadow-sm)}
+.flow-step .n{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;background:var(--primary);color:#fff;border-radius:50%;font-size:.8rem;font-weight:700;margin-bottom:10px}
+.flow-step h4{font-size:.98rem;margin-bottom:6px;color:var(--text)}
+.flow-step p{font-size:.85rem;color:var(--text-muted)}
+.flow-arrow{display:flex;align-items:center;color:var(--secondary);font-size:1.4rem}
+
+/* 表单卡片 */
+.form-section{padding:40px 0 80px}
+.form-card{max-width:760px;margin:0 auto;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:36px;box-shadow:var(--shadow-md)}
+.field{margin-bottom:22px}
+.field-row{display:flex;gap:20px}
+.field-row .field{flex:1}
+label.field-label{display:block;font-size:.9rem;font-weight:600;margin-bottom:8px;color:var(--text)}
+label .req{color:#dc2626;margin-left:3px}
+input[type=text],input[type=email],textarea,select{
+  width:100%;background:var(--code-bg);border:1px solid var(--border-strong);border-radius:8px;
+  color:var(--text);padding:12px 14px;font-size:.95rem;font-family:inherit;transition:border-color .2s;
+}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-tint)}
+input::placeholder,textarea::placeholder{color:#94a3b8}
+textarea{min-height:150px;resize:vertical;line-height:1.6}
+.hint{font-size:.8rem;color:var(--text-muted);margin-top:6px}
+
+/* 类型选择 */
+.type-chips{display:flex;gap:10px;flex-wrap:wrap}
+.type-chip{cursor:pointer}
+.type-chip input{position:absolute;opacity:0;pointer-events:none}
+.type-chip span{display:inline-flex;align-items:center;gap:6px;padding:9px 14px;background:var(--code-bg);border:1px solid var(--border-strong);border-radius:8px;font-size:.88rem;font-weight:500;color:var(--text-muted);transition:all .2s}
+.type-chip input:checked+span{border-color:var(--primary);background:var(--primary-tint);color:var(--primary-dark);font-weight:600}
+.type-chip:hover span{border-color:var(--primary)}
+
+/* 按钮 */
+.btn-row{display:flex;gap:12px;flex-wrap:wrap;margin-top:28px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:13px 24px;border-radius:9px;font-size:.98rem;font-weight:600;border:1px solid transparent;cursor:pointer;font-family:inherit;transition:all .2s}
+.btn svg{width:18px;height:18px}
+.btn-primary{background:var(--primary);color:#fff;box-shadow:0 3px 10px rgba(37,99,235,.2)}
+.btn-primary:hover{background:var(--primary-dark);transform:translateY(-2px)}
+.btn-ghost{background:var(--surface);color:var(--text);border-color:var(--border-strong)}
+.btn-ghost:hover{background:var(--surface-light);border-color:var(--primary);color:var(--primary)}
+
+/* 提示条 */
+.notice{background:var(--primary-tint);border:1px solid rgba(37,99,235,.22);border-radius:10px;padding:16px 18px;margin-bottom:26px;display:flex;gap:12px;align-items:flex-start}
+.notice svg{width:20px;height:20px;color:var(--primary);flex-shrink:0;margin-top:2px}
+.notice b{color:var(--primary-dark)}
+.notice p{font-size:.88rem;color:var(--text-muted);margin-top:4px}
+
+/* 预览弹层 */
+.overlay{position:fixed;inset:0;background:rgba(20,22,28,.5);backdrop-filter:blur(4px);z-index:10000;display:none;align-items:center;justify-content:center;padding:20px}
+.overlay.show{display:flex}
+.modal{width:100%;max-width:640px;max-height:85vh;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:16px;box-shadow:0 24px 70px rgba(20,22,28,.24)}
+.modal-head{display:flex;align-items:center;justify-content:space-between;padding:20px 24px;border-bottom:1px solid var(--border)}
+.modal-head h3{font-size:1.15rem;color:var(--text)}
+.modal-close{background:none;border:none;color:var(--text-muted);font-size:1.6rem;cursor:pointer;line-height:1}
+.modal-close:hover{color:var(--text)}
+.modal-body{padding:20px 24px}
+.modal-body .pv-title{font-size:1rem;font-weight:600;color:var(--primary-dark);margin-bottom:12px;word-break:break-word}
+.modal-body pre{background:var(--code-bg);border:1px solid var(--border);border-radius:10px;padding:16px;overflow:auto;max-height:320px}
+.modal-body pre code{font-family:var(--font-mono);font-size:.82rem;line-height:1.65;color:#334155;white-space:pre-wrap;word-break:break-word;background:none;padding:0}
+.modal-foot{padding:16px 24px;border-top:1px solid var(--border);display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.modal-foot .btn{padding:10px 18px;font-size:.9rem}
+
+/* Toast */
+.toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%) translateY(20px);background:var(--surface);border:1px solid var(--border-strong);color:var(--text);padding:12px 20px;border-radius:10px;font-size:.9rem;box-shadow:var(--shadow-lg);opacity:0;pointer-events:none;transition:all .25s;z-index:10001}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.ok{border-color:var(--success);color:var(--success)}
+.toast.err{border-color:#dc2626;color:#dc2626}
+
+/* Footer */
+footer{padding:50px 0;border-top:1px solid var(--border);text-align:center;background:var(--surface)}
+.footer-links{display:flex;justify-content:center;gap:28px;margin-bottom:20px;flex-wrap:wrap}
+.footer-links a{color:var(--text-muted);font-size:.9rem;transition:color .2s}
+.footer-links a:hover{color:var(--primary)}
+.footer-copy{color:var(--text-muted);font-size:.9rem}
+
+@media (max-width:768px){
+  .hero h1{font-size:1.9rem}
+  .nav-links{display:none}
+  .field-row{flex-direction:column;gap:0}
+  .form-card{padding:24px 20px}
+  .flow-arrow{display:none}
+}
